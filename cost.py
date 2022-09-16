@@ -296,7 +296,10 @@ class AutoDiffCost(Cost):
             np.log(self.dynamics.updated_current_state[:params.FPS] +
                    self.b_updated_tiles / self.a_updated_tiles))
 
-        self.current_cost = -self.quality_sum + self.sum_quality_var + self.zero_bound_barrier + self.upper_bound_barrier + self.lower_bound_barrier
+        self.sum_u = np.sum(u)
+        self.bw_bound_barrier = -np.log(self.bandwidth_budget[i] - self.sum_u)
+
+        self.current_cost = -self.quality_sum + self.sum_quality_var + self.zero_bound_barrier + self.upper_bound_barrier + self.lower_bound_barrier + self.bw_bound_barrier
 
         return self.current_cost
 
@@ -312,24 +315,19 @@ class AutoDiffCost(Cost):
         Returns:
             dl/dx [state_size].
         """
-        # if terminal:
-        #     z = np.hstack([x, i])
-        #     return np.array(self._l_x_terminal(*z))
 
-        # z = np.hstack([x, u, i])
-        # return np.array(self._l_x(*z))
+        ################# initialization ####################
 
         # cost of current step wrt. current state (non-updated)
         self.current_cost_x = np.zeros((self.current_state_size, ))
-
-        ################# quality_sum_x ####################
         self.quality_sum_x = np.zeros((self.current_state_size, ))
         self.quality_var_x = np.zeros((self.current_state_size, ))
+
         # zero_bound_barrier_x is all 0 since it only depends on actions u
         self.upper_bound_barrier_x = np.zeros((self.current_state_size, ))
         self.lower_bound_barrier_x = np.zeros((self.current_state_size, ))
 
-        # quality_sum_x
+        ################# quality_sum_x ####################
         self.quality_tiles_wrt_log_fang = self.tile_utility_coef[
             2] + 2 * self.tile_utility_coef[
                 3] * self.log_fang + 3 * self.tile_utility_coef[
@@ -337,7 +335,7 @@ class AutoDiffCost(Cost):
         self.log_fang_wrt_x = self.tile_a_cur_step / (
             2 * np.log(10) * self.tile_a_cur_step * self.num_points)
         self.quality_sum_x[:self.dynamics.
-                           num_old_tiles_removed_from_current_state] = self.quality_tiles_wrt_log_fang * self.log_fang_wrt_x
+                           num_old_tiles_removed_from_current_state] = self.quality_tiles_wrt_log_fang * self.log_fang_wrt_x * self.frame_weights
 
         ################# quality_var_x ####################
 
@@ -384,20 +382,33 @@ class AutoDiffCost(Cost):
         """Partial derivative of cost function with respect to u.
 
         Args:
-            x: Current state [state_size].
-            u: Current control [action_size]. None if terminal.
+            x: Current state [current_state_size].
+            u: Current control [current_action_size]. None if terminal.
             i: Current time step.
             terminal: Compute terminal cost. Default: False.
 
         Returns:
-            dl/du [action_size].
+            dl/du [current_action_size].
         """
-        if terminal:
-            # Not a function of u, so the derivative is zero.
-            return np.zeros(self._action_size)
 
-        z = np.hstack([x, u, i])
-        return np.array(self._l_u(*z))
+        ################# initialization ####################
+        self.current_cost_u = np.zeros((self.current_state_size, ))
+
+        ################# quality_sum_u ####################
+        self.quality_sum_u = self.quality_sum_x.copy()
+
+        ################# quality_var_u ####################
+        self.quality_var_u = self.quality_sum_x.copy()
+
+        ################# barrier functions ##########################
+        self.zero_bound_barrier_u = -1 / u
+        self.upper_bound_barrier_u = self.upper_bound_barrier_x.copy()
+        self.lower_bound_barrier_u = self.lower_bound_barrier_x.copy()
+        self.bw_bound_barrier_u = 1 / (self.bandwidth_budget[i] - self.sum_u)
+
+        self.current_cost_u = -self.quality_sum_u + self.quality_var_u + self.zero_bound_barrier_u + self.upper_bound_barrier_u + self.lower_bound_barrier_u + self.bw_bound_barrier_u
+
+        return self.current_cost_u
 
     def l_xx(self, x, u, i, terminal=False):
         """Second partial derivative of cost function with respect to x.
