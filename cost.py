@@ -92,11 +92,12 @@ class AutoDiffCost(Cost):
     def get_quality_for_tiles(self):
         self.log_fang = np.log10(self.num_points_per_degree)
         # tmp = np.array([1, np.log10(1 / self.theta_of_interest), self.log_fang, self.log_fang**2, self.log_fang**3])
-        self.quality_tiles = self.tile_utility_coef[0] \
-                            + self.tile_utility_coef[1] * np.log10(1 / self.theta_of_interest) \
-                            + self.tile_utility_coef[2] * self.log_fang \
-                            + self.tile_utility_coef[3] * self.log_fang**2 \
-                            + self.tile_utility_coef[4] * self.log_fang**3
+        self.quality_tiles = self.tile_utility_coef[
+            0] + self.tile_utility_coef[1] * np.log10(
+                1 / self.theta_of_interest) + self.tile_utility_coef[
+                    2] * self.log_fang + self.tile_utility_coef[
+                        3] * self.log_fang**2 + self.tile_utility_coef[
+                            4] * self.log_fang**3
 
     def l(self,
           x,
@@ -166,7 +167,7 @@ class AutoDiffCost(Cost):
 
         # tiles that finish updating, i.e., the first params.FPS framess
         self.tile_of_interest_pos = self.viewing_probability[i * params.FPS:(
-            i + 4) * params.FPS].nonzero()
+            i + 1) * params.FPS].nonzero()
         self.tile_a_cur_step = self.tile_a[self.start_frame_idx_within_video:
                                            self.start_frame_idx_within_video +
                                            params.FPS][
@@ -191,13 +192,18 @@ class AutoDiffCost(Cost):
         self.quality_sum = np.dot(self.quality_tiles, self.frame_weights.T)
 
         ################# quality_var ####################
-        self.quality_diff = []
+        self.quality_diff = np.zeros(
+            (params.FPS, params.NUM_TILES_PER_SIDE_IN_A_FRAME,
+             params.NUM_TILES_PER_SIDE_IN_A_FRAME,
+             params.NUM_TILES_PER_SIDE_IN_A_FRAME))
         self.num_overlap_tiles_adjacent_frames = np.zeros((params.FPS, ))
         self.quality_var_adjacent_frames = np.zeros((params.FPS, ))
 
         # convenient for calculating quality_var and quality_var_x
-        self.quality_tiles_in_matrix = self.viewing_probability_of_interest.copy()
-        self.quality_tiles_in_matrix[self.tile_of_interest_pos] = self.quality_tiles
+        self.quality_tiles_in_matrix = self.viewing_probability_of_interest.copy(
+        )
+        self.quality_tiles_in_matrix[
+            self.tile_of_interest_pos] = self.quality_tiles
 
         # index of tiles; shape: [FPS, NUM_TILES_PER_SIDE_IN_A_FRAME, ..., ...]
         # start from 0.
@@ -216,34 +222,40 @@ class AutoDiffCost(Cost):
         # overlap is the tiles that are not empty in both current and previous
         # frames. Here is the overlap between the 1st frame_of_interest (31st
         # frame in current buffer) and 30th frame in buffer.
-        overlap_pos = np.where((buffer_[params.FPS - 1] != 0) & (
-            self.order_nonzero_view_prob_of_interest[0] != 0))
+        # each element of overlap_pos has shape: [NUM_TILES_PER_SIDE_IN_A_FRAME, ..., ...]
+        overlap_pos = []
+        overlap_pos.append(
+            np.where((buffer_[params.FPS - 1] != 0)
+                     & (self.order_nonzero_view_prob_of_interest[0] != 0)))
 
         # this stores indexes for self.quality_tiles to index!! Then variance
         # can be calculated for batch of tiles!
         self.overlap_tiles_index_adjacent_frames.append(
-            self.order_nonzero_view_prob_of_interest[0][overlap_pos])
-        self.quality_diff.append(
-            buffer_[params.FPS - 1][overlap_pos] -
-            self.quality_tiles[self.overlap_tiles_index_adjacent_frames[0]])
-        self.num_overlap_tiles_adjacent_frames[0] = len(overlap_pos[0])
+            self.order_nonzero_view_prob_of_interest[0][overlap_pos[0]])
+        self.quality_diff[0][overlap_pos[0]] = buffer_[params.FPS - 1][
+            overlap_pos[0]] - self.quality_tiles[
+                self.overlap_tiles_index_adjacent_frames[0]]
+        self.num_overlap_tiles_adjacent_frames[0] = len(overlap_pos[0][0])
         self.quality_var_adjacent_frames[0] = np.sum(
             self.quality_diff[0]**
             2) / self.num_overlap_tiles_adjacent_frames[0]
 
         for frame_idx in range(1, params.FPS):
-            overlap_pos = np.where(
-                (self.order_nonzero_view_prob_of_interest[frame_idx - 1] != 0)
-                & (self.order_nonzero_view_prob_of_interest[frame_idx] != 0))
+            overlap_pos.append(
+                np.where((self.order_nonzero_view_prob_of_interest[frame_idx -
+                                                                   1] != 0)
+                         & (self.order_nonzero_view_prob_of_interest[frame_idx]
+                            != 0)))
 
-            # [0] for smaller-index frame, [1] for larger-index frame
-            self.overlap_tiles_index_adjacent_frames.append(np.array([self.order_nonzero_view_prob_of_interest[frame_idx - 1][overlap_pos], \
-                                                                                 self.order_nonzero_view_prob_of_interest[frame_idx][overlap_pos]]))
+            self.quality_diff[frame_idx] = (
+                self.quality_tiles_in_matrix[frame_idx - 1] -
+                self.quality_tiles_in_matrix[frame_idx]
+            ) * self.viewing_probability_of_interest[
+                frame_idx -
+                1] * self.viewing_probability_of_interest[frame_idx]
 
-            self.quality_diff.append(self.quality_tiles[self.overlap_tiles_index_adjacent_frames[frame_idx][0, :]] - \
-                                     self.quality_tiles[self.overlap_tiles_index_adjacent_frames[frame_idx][1, :]])
-            self.num_overlap_tiles_adjacent_frames[frame_idx] = len(
-                overlap_pos[0])
+            self.num_overlap_tiles_adjacent_frames[
+                frame_idx] = np.count_nonzero(self.quality_diff[frame_idx])
             self.quality_var_adjacent_frames[frame_idx] = np.sum(
                 self.quality_diff[frame_idx]**
                 2) / self.num_overlap_tiles_adjacent_frames[frame_idx]
@@ -254,7 +266,7 @@ class AutoDiffCost(Cost):
         ##########################################################
 
         ################# barrier functions ##########################
-        self.zero_bound_barrier = np.sum(np.log(u))
+        self.zero_bound_barrier = -np.sum(np.log(u))
         self.updated_tiles_pos = self.viewing_probability[
             i * params.FPS:i * params.FPS + params.TARGET_LATENCY].nonzero()
 
@@ -264,7 +276,7 @@ class AutoDiffCost(Cost):
             (self.max_rates[self.start_frame_idx_within_video:],
              self.max_rates[:self.start_frame_idx_within_video]),
             axis=0)[self.updated_tiles_pos]
-        self.upper_bound_barrier = np.sum(
+        self.upper_bound_barrier = -np.sum(
             np.log(self.max_rates_cur_step -
                    self.dynamics.updated_current_state))
 
@@ -280,11 +292,11 @@ class AutoDiffCost(Cost):
         # only care about the first params.FPS frames among all updated tiles,
         # because only these tiles finish being updated and to be involved in
         # final visual quality.
-        self.lower_bound_barrier = np.sum(
+        self.lower_bound_barrier = -np.sum(
             np.log(self.dynamics.updated_current_state[:params.FPS] +
                    self.b_updated_tiles / self.a_updated_tiles))
 
-        self.current_cost = -self.quality_sum + self.sum_quality_var - self.zero_bound_barrier - self.upper_bound_barrier - self.lower_bound_barrier
+        self.current_cost = -self.quality_sum + self.sum_quality_var + self.zero_bound_barrier + self.upper_bound_barrier + self.lower_bound_barrier
 
         return self.current_cost
 
@@ -313,21 +325,58 @@ class AutoDiffCost(Cost):
         ################# quality_sum_x ####################
         self.quality_sum_x = np.zeros((self.current_state_size, ))
         self.quality_var_x = np.zeros((self.current_state_size, ))
+        # zero_bound_barrier_x is all 0 since it only depends on actions u
         self.upper_bound_barrier_x = np.zeros((self.current_state_size, ))
         self.lower_bound_barrier_x = np.zeros((self.current_state_size, ))
 
         # quality_sum_x
-        self.quality_tiles_wrt_log_fang = self.tile_utility_coef[2] + 2 * \
-                self.tile_utility_coef[3] * self.log_fang + 3 * \
-                self.tile_utility_coef[4] * self.log_fang**2
+        self.quality_tiles_wrt_log_fang = self.tile_utility_coef[
+            2] + 2 * self.tile_utility_coef[
+                3] * self.log_fang + 3 * self.tile_utility_coef[
+                    4] * self.log_fang**2
         self.log_fang_wrt_x = self.tile_a_cur_step / (
             2 * np.log(10) * self.tile_a_cur_step * self.num_points)
-        self.quality_sum_x[:self.num_old_tiles_removed_from_current_state] = \
-                self.quality_tiles_wrt_log_fang * self.log_fang_wrt_x
+        self.quality_sum_x[:self.dynamics.
+                           num_old_tiles_removed_from_current_state] = self.quality_tiles_wrt_log_fang * self.log_fang_wrt_x
 
         ################# quality_var_x ####################
+
+        # toDo by Tongyu: assign equation number in the paper for "normalized_quality_diff_in_matrix "
+        # 2nd factor of equation (?) in the paper
+        self.normalized_quality_diff_in_matrix = np.zeros(
+            (params.FPS, params.NUM_TILES_PER_SIDE_IN_A_FRAME,
+             params.NUM_TILES_PER_SIDE_IN_A_FRAME,
+             params.NUM_TILES_PER_SIDE_IN_A_FRAME))
         for frame_idx in range(params.FPS - 1):
-            self.quality_sum_x[]
+            self.normalized_quality_diff_in_matrix[
+                frame_idx] = -self.quality_diff[
+                    frame_idx] * 2 / self.num_overlap_tiles_adjacent_frames[
+                        frame_idx] + self.quality_diff[
+                            frame_idx +
+                            1] * 2 / self.num_overlap_tiles_adjacent_frames[
+                                frame_idx + 1]
+        self.num_overlap_tiles_adjacent_frames[frame_idx] = -self.quality_diff[
+            frame_idx] * 2 / self.num_overlap_tiles_adjacent_frames[frame_idx]
+
+        # map "num_overlap_tiles_adjacent_frames" from matrix to a vector,
+        # which corresponds with "quality_sum_x" for multiplication.
+        self.normalized_quality_diff_in_vector = self.normalized_quality_diff_in_matrix[
+            self.tile_of_interest_pos]
+        self.quality_var_x[:self.dynamics.
+                           num_old_tiles_removed_from_current_state] = self.quality_sum_x[:self
+                                                                                          .
+                                                                                          dynamics
+                                                                                          .
+                                                                                          num_old_tiles_removed_from_current_state] * self.normalized_quality_diff_in_vector
+
+        ################# barrier functions ##########################
+        self.upper_bound_barrier_x = 1 / (self.max_rates_cur_step -
+                                          self.dynamics.updated_current_state)
+        self.lower_bound_barrier_x[self.tile_of_interest_pos] = -1 / (
+            self.dynamics.updated_current_state[:params.FPS] +
+            self.b_updated_tiles / self.a_updated_tiles)
+
+        self.current_cost_x = -self.quality_sum_x + self.quality_var_x + self.upper_bound_barrier_x + self.lower_bound_barrier_x
 
         return self.current_cost_x
 
