@@ -260,8 +260,7 @@ class AutoDiffCost(Cost):
                 self.quality_diff[frame_idx]**
                 2) / self.num_overlap_tiles_adjacent_frames[frame_idx]
 
-        self.sum_quality_var = np.sum(
-            self.quality_var_adjacent_frames) * params.WEIGHT_VARIANCE
+        self.sum_quality_var = np.sum(self.quality_var_adjacent_frames)
 
         ##########################################################
 
@@ -296,7 +295,7 @@ class AutoDiffCost(Cost):
             np.log(self.dynamics.updated_current_state[:params.FPS] +
                    self.b_updated_tiles / self.a_updated_tiles))
 
-        self.current_cost = -self.quality_sum + self.sum_quality_var + self.zero_bound_barrier + self.upper_bound_barrier + self.lower_bound_barrier
+        self.current_cost = -self.quality_sum + self.sum_quality_var * params.WEIGHT_VARIANCE + self.zero_bound_barrier + self.upper_bound_barrier + self.lower_bound_barrier
 
         return self.current_cost
 
@@ -376,7 +375,7 @@ class AutoDiffCost(Cost):
             self.dynamics.updated_current_state[:params.FPS] +
             self.b_updated_tiles / self.a_updated_tiles)
 
-        self.current_cost_x = -self.quality_sum_x + self.quality_var_x + self.upper_bound_barrier_x + self.lower_bound_barrier_x
+        self.current_cost_x = -self.quality_sum_x + self.quality_var_x * params.WEIGHT_VARIANCE + self.upper_bound_barrier_x + self.lower_bound_barrier_x
 
         return self.current_cost_x
 
