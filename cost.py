@@ -193,6 +193,13 @@ class AutoDiffCost(Cost):
                                            self.frame_weights.T)
 
         ################# quality_var ####################
+
+        # mark as 1 for overlap tiles for each pair of adjacent frames,
+        # from 1st frame to FPS_th frame in this update round
+        self.mask_overlap_tiles_in_mat = np.zeros(
+            (params.FPS, params.NUM_TILES_PER_SIDE_IN_A_FRAME,
+             params.NUM_TILES_PER_SIDE_IN_A_FRAME,
+             params.NUM_TILES_PER_SIDE_IN_A_FRAME))
         self.quality_diff = np.zeros(
             (params.FPS, params.NUM_TILES_PER_SIDE_IN_A_FRAME,
              params.NUM_TILES_PER_SIDE_IN_A_FRAME,
@@ -201,9 +208,8 @@ class AutoDiffCost(Cost):
         self.quality_var_adjacent_frames = np.zeros((params.FPS, ))
 
         # convenient for calculating quality_var and quality_var_x
-        self.quality_tiles_in_matrix = self.viewing_probability_of_interest.copy(
-        )
-        self.quality_tiles_in_matrix[
+        self.quality_tiles_in_mat = self.viewing_probability_of_interest.copy()
+        self.quality_tiles_in_mat[
             self.tile_of_interest_pos] = self.quality_tiles
 
         # index of tiles; shape: [FPS, NUM_TILES_PER_SIDE_IN_A_FRAME, ..., ...]
@@ -236,6 +242,7 @@ class AutoDiffCost(Cost):
         self.quality_diff[0][overlap_pos[0]] = buffer_[params.FPS - 1][
             overlap_pos[0]] - self.quality_tiles[
                 self.overlap_tiles_index_adjacent_frames[0]]
+        self.mask_overlap_tiles_in_mat[0][overlap_pos[0]] = 1
         self.num_overlap_tiles_adjacent_frames[0] = len(overlap_pos[0][0])
         self.quality_var_adjacent_frames[0] = np.sum(
             self.quality_diff[0]**
@@ -248,9 +255,15 @@ class AutoDiffCost(Cost):
                          & (self.order_nonzero_view_prob_of_interest[frame_idx]
                             != 0)))
 
+            # a mask for overlapped tiles in each pair of adjacent frames
+            self.mask_overlap_tiles_in_mat[
+                frame_idx] = self.viewing_probability_of_interest[
+                    frame_idx -
+                    1] * self.viewing_probability_of_interest[frame_idx]
+
             self.quality_diff[frame_idx] = (
-                self.quality_tiles_in_matrix[frame_idx - 1] -
-                self.quality_tiles_in_matrix[frame_idx]
+                self.quality_tiles_in_mat[frame_idx - 1] -
+                self.quality_tiles_in_mat[frame_idx]
             ) * self.viewing_probability_of_interest[
                 frame_idx -
                 1] * self.viewing_probability_of_interest[frame_idx]
@@ -342,39 +355,68 @@ class AutoDiffCost(Cost):
 
         ################# quality_var_x ####################
 
-        # todo by Tongyu: assign equation number in the paper for "normalized_quality_diff_in_matrix "
-        # 2nd factor of equation (?) in the paper
-        self.normalized_quality_diff_in_matrix = np.zeros(
+        # todo by Tongyu: assign equation number in the paper for "normalized_mask_overlap_tiles_in_mat"
+        # 2nd addition term of equation (?) in the paper
+        # for calculation of quality_var_xx
+        self.normalized_mask_overlap_tiles_in_mat = np.zeros(
+            (params.FPS, params.NUM_TILES_PER_SIDE_IN_A_FRAME,
+             params.NUM_TILES_PER_SIDE_IN_A_FRAME,
+             params.NUM_TILES_PER_SIDE_IN_A_FRAME))
+
+        # todo by Tongyu: assign equation number in the paper for "normalized_quality_diff_in_mat "
+        # 2nd multiplication factor of equation (?) in the paper
+        self.normalized_quality_diff_in_mat = np.zeros(
             (params.FPS, params.NUM_TILES_PER_SIDE_IN_A_FRAME,
              params.NUM_TILES_PER_SIDE_IN_A_FRAME,
              params.NUM_TILES_PER_SIDE_IN_A_FRAME))
         for frame_idx in range(params.FPS - 1):
-            self.normalized_quality_diff_in_matrix[
+            self.normalized_quality_diff_in_mat[
                 frame_idx] = -self.quality_diff[
                     frame_idx] * 2 / self.num_overlap_tiles_adjacent_frames[
                         frame_idx] + self.quality_diff[
                             frame_idx +
                             1] * 2 / self.num_overlap_tiles_adjacent_frames[
                                 frame_idx + 1]
-        self.num_overlap_tiles_adjacent_frames[frame_idx] = -self.quality_diff[
+
+            self.normalized_mask_overlap_tiles_in_mat[
+                frame_idx] = self.mask_overlap_tiles_in_mat[
+                    frame_idx] * 2 / self.num_overlap_tiles_adjacent_frames[
+                        frame_idx] + self.mask_overlap_tiles_in_mat[
+                            frame_idx +
+                            1] * 2 / self.num_overlap_tiles_adjacent_frames[
+                                frame_idx + 1]
+        self.normalized_quality_diff_in_mat[frame_idx] = -self.quality_diff[
             frame_idx] * 2 / self.num_overlap_tiles_adjacent_frames[frame_idx]
 
-        # map "num_overlap_tiles_adjacent_frames" from matrix to a vector,
+        self.normalized_mask_overlap_tiles_in_mat[
+            frame_idx] = self.mask_overlap_tiles_in_mat[
+                frame_idx] * 2 / self.num_overlap_tiles_adjacent_frames[
+                    frame_idx]
+
+        # map "normalized_quality_diff_in_mat" from matrix to a vector,
         # which corresponds with "quality_sum_x" for multiplication.
-        self.normalized_quality_diff_in_vector = self.normalized_quality_diff_in_matrix[
+        self.normalized_quality_diff_in_vec = self.normalized_quality_diff_in_mat[
             self.tile_of_interest_pos]
+
+        # map "normalized_mask_overlap_tiles_in_mat" from matrix to a vector,
+        # which corresponds with "quality_var_xx" for multiplication.
+        self.normalized_mask_overlap_tiles_in_vec = self.normalized_quality_diff_in_mat[
+            self.tile_of_interest_pos]
+
         self.quality_var_x[:self.dynamics.
                            num_old_tiles_removed_from_current_state] = self.quality_sum_x[:self
                                                                                           .
                                                                                           dynamics
                                                                                           .
-                                                                                          num_old_tiles_removed_from_current_state] * self.normalized_quality_diff_in_vector
+                                                                                          num_old_tiles_removed_from_current_state] * self.normalized_quality_diff_in_vec
 
         ################# barrier functions ##########################
         self.upper_bound_barrier_x = 1 / (self.max_rates_cur_step -
                                           self.dynamics.updated_current_state)
         self.lower_bound_barrier_x[self.tile_of_interest_pos] = -1 / (
-            self.dynamics.updated_current_state[:params.FPS] +
+            self.dynamics.
+            updated_current_state[:self.dynamics.
+                                  num_old_tiles_removed_from_current_state] +
             self.b_updated_tiles / self.a_updated_tiles)
 
         self.current_cost_x = -self.weighted_quality_sum_x + self.quality_var_x * params.WEIGHT_VARIANCE + self.upper_bound_barrier_x + self.lower_bound_barrier_x
@@ -430,7 +472,7 @@ class AutoDiffCost(Cost):
 
         self.current_cost_xx = np.zeros(
             (self.current_state_size, self.current_state_size))
-        self.quality_sum_xx = np.zeros(
+        self.weighted_quality_sum_xx = np.zeros(
             (self.current_state_size, self.current_state_size))
         self.quality_sum_xx_diagnl_elems = np.zeros(
             (self.dynamics.num_old_tiles_removed_from_current_state, ))
@@ -447,60 +489,73 @@ class AutoDiffCost(Cost):
         ################# quality_sum_xx ####################
         self.quality_tiles_sec_deriv_wrt_log_fang = self.tile_utility_coef[
             3] * 2 + 6 * self.tile_utility_coef[4] * self.log_fang
-        self.log_fang_wrt_x = self.tile_a_cur_step / (2 * np.log(10) *
-                                                      self.num_points)
         self.log_fang_wrt_xx = -self.tile_a_cur_step**2 / (2 * np.log(10) *
                                                            self.num_points**2)
-        self.quality_sum_x[:self.dynamics.
-                           num_old_tiles_removed_from_current_state] = self.quality_tiles_wrt_log_fang * self.log_fang_wrt_x * self.frame_weights
 
+        # a vector of diagnal elements of "quality_sum_xx"
         self.quality_sum_xx_diagnl_elems = self.quality_tiles_sec_deriv_wrt_log_fang * self.log_fang_wrt_x**2 + self.quality_tiles_wrt_log_fang * self.log_fang_wrt_xx
         self.weighted_quality_sum_xx_diagnl_elems = self.quality_sum_xx_diagnl_elems * self.frame_weights_diagnl
 
         np.fill_diagonal(
             self.
-            quality_sum_xx[:self.dynamics.
-                           num_old_tiles_removed_from_current_state, :self.
-                           dynamics.num_old_tiles_removed_from_current_state],
+            weighted_quality_sum_xx[:self.dynamics.
+                                    num_old_tiles_removed_from_current_state, :
+                                    self.dynamics.
+                                    num_old_tiles_removed_from_current_state],
             self.weighted_quality_sum_xx_diagnl_elems)
 
         ################# quality_var_xx ####################
-        # todo by Tongyu: finish l_xx function
 
-        self.normalized_quality_diff_in_matrix = np.zeros(
-            (params.FPS, params.NUM_TILES_PER_SIDE_IN_A_FRAME,
-             params.NUM_TILES_PER_SIDE_IN_A_FRAME,
-             params.NUM_TILES_PER_SIDE_IN_A_FRAME))
-        for frame_idx in range(params.FPS - 1):
-            self.normalized_quality_diff_in_matrix[
-                frame_idx] = -self.quality_diff[
-                    frame_idx] * 2 / self.num_overlap_tiles_adjacent_frames[
-                        frame_idx] + self.quality_diff[
-                            frame_idx +
-                            1] * 2 / self.num_overlap_tiles_adjacent_frames[
-                                frame_idx + 1]
-        self.num_overlap_tiles_adjacent_frames[frame_idx] = -self.quality_diff[
-            frame_idx] * 2 / self.num_overlap_tiles_adjacent_frames[frame_idx]
+        # ------------ 2nd-order partial derivatives for single variable --------------
 
-        # map "num_overlap_tiles_adjacent_frames" from matrix to a vector,
-        # which corresponds with "quality_sum_x" for multiplication.
-        self.normalized_quality_diff_in_vector = self.normalized_quality_diff_in_matrix[
-            self.tile_of_interest_pos]
-        self.quality_var_x[:self.dynamics.
-                           num_old_tiles_removed_from_current_state] = self.quality_sum_x[:self
-                                                                                          .
-                                                                                          dynamics
-                                                                                          .
-                                                                                          num_old_tiles_removed_from_current_state] * self.normalized_quality_diff_in_vector
+        # a vector of diagnal elements of "quality_var_xx"
+        self.quality_var_xx_diagnl_elems = self.quality_sum_xx_diagnl_elems * self.normalized_quality_diff_in_vec + self.quality_sum_x**2 * self.normalized_mask_overlap_tiles_in_vec
+
+        np.fill_diagonal(
+            self.
+            quality_var_xx[:self.dynamics.
+                           num_old_tiles_removed_from_current_state, :self.
+                           dynamics.num_old_tiles_removed_from_current_state],
+            self.quality_var_xx_diagnl_elems)
+
+        # ------------ mixed 2nd-order partial derivatives --------------
+        for frame_idx in range(1, params.FPS - 1):
+            overlap_pos = self.quality_diff[frame_idx].nonzero()
+            small_indexes = self.order_nonzero_view_prob_of_interest[
+                frame_idx - 1][overlap_pos]
+            large_indexes = self.order_nonzero_view_prob_of_interest[
+                frame_idx][overlap_pos]
+            num_overlap_tiles = self.num_overlap_tiles_adjacent_frames[
+                frame_idx]
+
+            # symmetric quality_var_xx
+            self.quality_var_xx[
+                small_indexes,
+                large_indexes] = -2 / num_overlap_tiles * self.quality_sum_x[
+                    small_indexes] * self.quality_sum_x[large_indexes]
+            self.quality_var_xx[
+                large_indexes,
+                small_indexes] = -2 / num_overlap_tiles * self.quality_sum_x[
+                    large_indexes] * self.quality_sum_x[small_indexes]
 
         ################# barrier functions ##########################
-        self.upper_bound_barrier_x = 1 / (self.max_rates_cur_step -
-                                          self.dynamics.updated_current_state)
-        self.lower_bound_barrier_x[self.tile_of_interest_pos] = -1 / (
-            self.dynamics.updated_current_state[:params.FPS] +
-            self.b_updated_tiles / self.a_updated_tiles)
+        np.fill_diagonal(
+            self.upper_bound_barrier_xx, -1 /
+            (self.max_rates_cur_step - self.dynamics.updated_current_state)**2)
 
-        self.current_cost_x = -self.quality_sum_x + self.quality_var_x + self.upper_bound_barrier_x + self.lower_bound_barrier_x
+        np.fill_diagonal(
+            self.
+            lower_bound_barrier_xx[:self.dynamics.
+                                   num_old_tiles_removed_from_current_state, :
+                                   self.dynamics.
+                                   num_old_tiles_removed_from_current_state],
+            1 /
+            (self.dynamics.
+             updated_current_state[:self.dynamics.
+                                   num_old_tiles_removed_from_current_state] +
+             self.b_updated_tiles / self.a_updated_tiles)**2)
+
+        self.current_cost_xx = -self.weighted_quality_sum_xx + self.quality_var_xx * params.WEIGHT_VARIANCE + self.upper_bound_barrier_xx + self.lower_bound_barrier_xx
 
         return self.current_cost_xx
 
@@ -508,36 +563,58 @@ class AutoDiffCost(Cost):
         """Second partial derivative of cost function with respect to u and x.
 
         Args:
-            x: Current state [state_size].
-            u: Current control [action_size]. None if terminal.
+            x: Current state [current_state_size].
+            u: Current control [current_action_size]. None if terminal.
             i: Current time step.
             terminal: Compute terminal cost. Default: False.
 
         Returns:
-            d^2l/dudx [action_size, state_size].
+            d^2l/dudx [current_action_size, current_state_size].
         """
-        if terminal:
-            # Not a function of u, so the derivative is zero.
-            return np.zeros((self._action_size, self._state_size))
+        ################# quality_sum_ux ####################
+        self.quality_sum_ux = self.quality_sum_xx.copy()
+        self.weighted_quality_sum_ux = self.weighted_quality_sum_xx.copy()
 
-        z = np.hstack([x, u, i])
-        return np.array(self._l_ux(*z))
+        ################# quality_var_ux ####################
+        self.quality_var_ux = self.quality_var_xx.copy()
+
+        ################# barrier functions ##########################
+        self.upper_bound_barrier_ux = self.upper_bound_barrier_xx.copy()
+        self.lower_bound_barrier_ux = self.lower_bound_barrier_xx.copy()
+
+        self.current_cost_ux = -self.weighted_quality_sum_ux + self.quality_var_ux * params.WEIGHT_VARIANCE + self.upper_bound_barrier_ux + self.lower_bound_barrier_ux
+
+        return self.current_cost_ux
 
     def l_uu(self, x, u, i, terminal=False):
         """Second partial derivative of cost function with respect to u.
 
         Args:
-            x: Current state [state_size].
-            u: Current control [action_size]. None if terminal.
+            x: Current state [current_state_size].
+            u: Current control [current_action_size]. None if terminal.
             i: Current time step.
             terminal: Compute terminal cost. Default: False.
 
         Returns:
-            d^2l/du^2 [action_size, action_size].
+            d^2l/du^2 [current_action_size, current_action_size].
         """
-        if terminal:
-            # Not a function of u, so the derivative is zero.
-            return np.zeros((self._action_size, self._action_size))
+        ################# quality_sum_uu ####################
+        self.quality_sum_uu = self.quality_sum_xx.copy()
+        self.weighted_quality_sum_uu = self.weighted_quality_sum_xx.copy()
 
-        z = np.hstack([x, u, i])
-        return np.array(self._l_uu(*z))
+        ################# quality_var_uu ####################
+        self.quality_var_uu = self.quality_var_xx.copy()
+
+        ################# barrier functions ##########################
+        self.zero_bound_barrier_uu = np.eye(self.current_action_size) / u**2
+        self.upper_bound_barrier_uu = self.upper_bound_barrier_xx.copy()
+        self.lower_bound_barrier_uu = self.lower_bound_barrier_xx.copy()
+
+        # there exists non-zero mixed 2nd-order partial derivatives for bw_bound_barrier function!!
+        self.bw_bound_barrier_uu = np.full(
+            (self.current_action_size, self.current_action_size),
+            -1 / (self.bandwidth_budget[i] - self.sum_u)**2)
+
+        self.current_cost_uu = -self.weighted_quality_sum_uu + self.quality_var_uu * params.WEIGHT_VARIANCE + self.zero_bound_barrier_uu + self.upper_bound_barrier_uu + self.lower_bound_barrier_uu + self.bw_bound_barrier_uu
+
+        return self.current_cost_uu
