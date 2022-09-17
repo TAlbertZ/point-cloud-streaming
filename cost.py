@@ -73,7 +73,7 @@ class AutoDiffCost(Cost):
         #                          inputs,
         #                          name="l_uu",
         #                          **kwargs)
-        self.quality_sum = 0.0
+        self.weighted_quality_sum = 0.0
         self.quality_var = 0.0
         self.tile_utility_coef = params.TILE_UTILITY_COEF
 
@@ -147,7 +147,7 @@ class AutoDiffCost(Cost):
         self.bandwidth_budget = bandwidth_budget
         self.update_start_idx = update_start_idx
         self.update_end_idx = update_end_idx
-        self.quality_sum = 0.0
+        self.weighted_quality_sum = 0.0
         self.quality_var = 0.0
         self.quality_tiles = np.zeros(
             (self.dynamics.num_old_tiles_removed_from_current_state, ))
@@ -189,7 +189,8 @@ class AutoDiffCost(Cost):
         self.num_points_per_degree = self.num_points**0.5 / self.theta_of_interest  # f_ang
         self.get_quality_for_tiles()  # update self.quality_tiles
 
-        self.quality_sum = np.dot(self.quality_tiles, self.frame_weights.T)
+        self.weighted_quality_sum = np.dot(self.quality_tiles,
+                                           self.frame_weights.T)
 
         ################# quality_var ####################
         self.quality_diff = np.zeros(
@@ -260,8 +261,7 @@ class AutoDiffCost(Cost):
                 self.quality_diff[frame_idx]**
                 2) / self.num_overlap_tiles_adjacent_frames[frame_idx]
 
-        self.sum_quality_var = np.sum(
-            self.quality_var_adjacent_frames) * params.WEIGHT_VARIANCE
+        self.sum_quality_var = np.sum(self.quality_var_adjacent_frames)
 
         ##########################################################
 
@@ -299,7 +299,7 @@ class AutoDiffCost(Cost):
         self.sum_u = np.sum(u)
         self.bw_bound_barrier = -np.log(self.bandwidth_budget[i] - self.sum_u)
 
-        self.current_cost = -self.quality_sum + self.sum_quality_var + self.zero_bound_barrier + self.upper_bound_barrier + self.lower_bound_barrier + self.bw_bound_barrier
+        self.current_cost = -self.weighted_quality_sum + self.sum_quality_var * params.WEIGHT_VARIANCE + self.zero_bound_barrier + self.upper_bound_barrier + self.lower_bound_barrier + self.bw_bound_barrier
 
         return self.current_cost
 
@@ -323,7 +323,7 @@ class AutoDiffCost(Cost):
         self.quality_sum_x = np.zeros((self.current_state_size, ))
         self.quality_var_x = np.zeros((self.current_state_size, ))
 
-        # zero_bound_barrier_x is all 0 since it only depends on actions u
+        # zero_bound_barrier_x and bw_bound_barrier_x are all 0 since it only depends on actions u
         self.upper_bound_barrier_x = np.zeros((self.current_state_size, ))
         self.lower_bound_barrier_x = np.zeros((self.current_state_size, ))
 
@@ -332,15 +332,141 @@ class AutoDiffCost(Cost):
             2] + 2 * self.tile_utility_coef[
                 3] * self.log_fang + 3 * self.tile_utility_coef[
                     4] * self.log_fang**2
-        self.log_fang_wrt_x = self.tile_a_cur_step / (
-            2 * np.log(10) * self.tile_a_cur_step * self.num_points)
+        self.log_fang_wrt_x = self.tile_a_cur_step / (2 * np.log(10) *
+                                                      self.num_points)
         self.quality_sum_x[:self.dynamics.
-                           num_old_tiles_removed_from_current_state] = self.quality_tiles_wrt_log_fang * self.log_fang_wrt_x * self.frame_weights
+                           num_old_tiles_removed_from_current_state] = self.quality_tiles_wrt_log_fang * self.log_fang_wrt_x
+        self.weighted_quality_sum_x = self.quality_sum_x.copy()
+        self.weighted_quality_sum_x[:self.dynamics.
+                                    num_old_tiles_removed_from_current_state] *= self.frame_weights
 
         ################# quality_var_x ####################
 
-        # toDo by Tongyu: assign equation number in the paper for "normalized_quality_diff_in_matrix "
+        # todo by Tongyu: assign equation number in the paper for "normalized_quality_diff_in_matrix "
         # 2nd factor of equation (?) in the paper
+        self.normalized_quality_diff_in_matrix = np.zeros(
+            (params.FPS, params.NUM_TILES_PER_SIDE_IN_A_FRAME,
+             params.NUM_TILES_PER_SIDE_IN_A_FRAME,
+             params.NUM_TILES_PER_SIDE_IN_A_FRAME))
+        for frame_idx in range(params.FPS - 1):
+            self.normalized_quality_diff_in_matrix[
+                frame_idx] = -self.quality_diff[
+                    frame_idx] * 2 / self.num_overlap_tiles_adjacent_frames[
+                        frame_idx] + self.quality_diff[
+                            frame_idx +
+                            1] * 2 / self.num_overlap_tiles_adjacent_frames[
+                                frame_idx + 1]
+        self.num_overlap_tiles_adjacent_frames[frame_idx] = -self.quality_diff[
+            frame_idx] * 2 / self.num_overlap_tiles_adjacent_frames[frame_idx]
+
+        # map "num_overlap_tiles_adjacent_frames" from matrix to a vector,
+        # which corresponds with "quality_sum_x" for multiplication.
+        self.normalized_quality_diff_in_vector = self.normalized_quality_diff_in_matrix[
+            self.tile_of_interest_pos]
+        self.quality_var_x[:self.dynamics.
+                           num_old_tiles_removed_from_current_state] = self.quality_sum_x[:self
+                                                                                          .
+                                                                                          dynamics
+                                                                                          .
+                                                                                          num_old_tiles_removed_from_current_state] * self.normalized_quality_diff_in_vector
+
+        ################# barrier functions ##########################
+        self.upper_bound_barrier_x = 1 / (self.max_rates_cur_step -
+                                          self.dynamics.updated_current_state)
+        self.lower_bound_barrier_x[self.tile_of_interest_pos] = -1 / (
+            self.dynamics.updated_current_state[:params.FPS] +
+            self.b_updated_tiles / self.a_updated_tiles)
+
+        self.current_cost_x = -self.weighted_quality_sum_x + self.quality_var_x * params.WEIGHT_VARIANCE + self.upper_bound_barrier_x + self.lower_bound_barrier_x
+
+        return self.current_cost_x
+
+    def l_u(self, x, u, i, terminal=False):
+        """Partial derivative of cost function with respect to u.
+
+        Args:
+            x: Current state [current_state_size].
+            u: Current control [current_action_size]. None if terminal.
+            i: Current time step.
+            terminal: Compute terminal cost. Default: False.
+
+        Returns:
+            dl/du [current_action_size].
+        """
+
+        ################# initialization ####################
+        self.current_cost_u = np.zeros((self.current_state_size, ))
+
+        ################# quality_sum_u ####################
+        self.quality_sum_u = self.quality_sum_x.copy()
+        self.weighted_quality_sum_u = self.weighted_quality_sum_x.copy()
+
+        ################# quality_var_u ####################
+        self.quality_var_u = self.quality_var_x.copy()
+
+        ################# barrier functions ##########################
+        self.zero_bound_barrier_u = -1 / u
+        self.upper_bound_barrier_u = self.upper_bound_barrier_x.copy()
+        self.lower_bound_barrier_u = self.lower_bound_barrier_x.copy()
+        self.bw_bound_barrier_u = 1 / (self.bandwidth_budget[i] - self.sum_u)
+
+        self.current_cost_u = -self.weighted_quality_sum_u + self.quality_var_u * params.WEIGHT_VARIANCE + self.zero_bound_barrier_u + self.upper_bound_barrier_u + self.lower_bound_barrier_u + self.bw_bound_barrier_u
+
+        return self.current_cost_u
+
+    def l_xx(self, x, u, i, terminal=False):
+        """Second partial derivative of cost function with respect to x.
+
+        Args:
+            x: Current state [current_state_size].
+            u: Current control [current_action_size]. None if terminal.
+            i: Current time step.
+            terminal: Compute terminal cost. Default: False.
+
+        Returns:
+            d^2l/dx^2 [state_size, state_size].
+        """
+        ################# initialization ####################
+
+        self.current_cost_xx = np.zeros(
+            (self.current_state_size, self.current_state_size))
+        self.quality_sum_xx = np.zeros(
+            (self.current_state_size, self.current_state_size))
+        self.quality_sum_xx_diagnl_elems = np.zeros(
+            (self.dynamics.num_old_tiles_removed_from_current_state, ))
+        self.quality_var_xx = np.zeros(
+            (self.current_state_size, self.current_state_size))
+        self.frame_weights_diagnl = np.diag(self.frame_weights)
+
+        # zero_bound_barrier_xx and bw_bound_barrier_xx are all 0 since it only depends on actions u
+        self.upper_bound_barrier_xx = np.zeros(
+            (self.current_state_size, self.current_state_size))
+        self.lower_bound_barrier_xx = np.zeros(
+            (self.current_state_size, self.current_state_size))
+
+        ################# quality_sum_xx ####################
+        self.quality_tiles_sec_deriv_wrt_log_fang = self.tile_utility_coef[
+            3] * 2 + 6 * self.tile_utility_coef[4] * self.log_fang
+        self.log_fang_wrt_x = self.tile_a_cur_step / (2 * np.log(10) *
+                                                      self.num_points)
+        self.log_fang_wrt_xx = -self.tile_a_cur_step**2 / (2 * np.log(10) *
+                                                           self.num_points**2)
+        self.quality_sum_x[:self.dynamics.
+                           num_old_tiles_removed_from_current_state] = self.quality_tiles_wrt_log_fang * self.log_fang_wrt_x * self.frame_weights
+
+        self.quality_sum_xx_diagnl_elems = self.quality_tiles_sec_deriv_wrt_log_fang * self.log_fang_wrt_x**2 + self.quality_tiles_wrt_log_fang * self.log_fang_wrt_xx
+        self.weighted_quality_sum_xx_diagnl_elems = self.quality_sum_xx_diagnl_elems * self.frame_weights_diagnl
+
+        np.fill_diagonal(
+            self.
+            quality_sum_xx[:self.dynamics.
+                           num_old_tiles_removed_from_current_state, :self.
+                           dynamics.num_old_tiles_removed_from_current_state],
+            self.weighted_quality_sum_xx_diagnl_elems)
+
+        ################# quality_var_xx ####################
+        # todo by Tongyu: finish l_xx function
+
         self.normalized_quality_diff_in_matrix = np.zeros(
             (params.FPS, params.NUM_TILES_PER_SIDE_IN_A_FRAME,
              params.NUM_TILES_PER_SIDE_IN_A_FRAME,
@@ -376,58 +502,7 @@ class AutoDiffCost(Cost):
 
         self.current_cost_x = -self.quality_sum_x + self.quality_var_x + self.upper_bound_barrier_x + self.lower_bound_barrier_x
 
-        return self.current_cost_x
-
-    def l_u(self, x, u, i, terminal=False):
-        """Partial derivative of cost function with respect to u.
-
-        Args:
-            x: Current state [current_state_size].
-            u: Current control [current_action_size]. None if terminal.
-            i: Current time step.
-            terminal: Compute terminal cost. Default: False.
-
-        Returns:
-            dl/du [current_action_size].
-        """
-
-        ################# initialization ####################
-        self.current_cost_u = np.zeros((self.current_state_size, ))
-
-        ################# quality_sum_u ####################
-        self.quality_sum_u = self.quality_sum_x.copy()
-
-        ################# quality_var_u ####################
-        self.quality_var_u = self.quality_sum_x.copy()
-
-        ################# barrier functions ##########################
-        self.zero_bound_barrier_u = -1 / u
-        self.upper_bound_barrier_u = self.upper_bound_barrier_x.copy()
-        self.lower_bound_barrier_u = self.lower_bound_barrier_x.copy()
-        self.bw_bound_barrier_u = 1 / (self.bandwidth_budget[i] - self.sum_u)
-
-        self.current_cost_u = -self.quality_sum_u + self.quality_var_u + self.zero_bound_barrier_u + self.upper_bound_barrier_u + self.lower_bound_barrier_u + self.bw_bound_barrier_u
-
-        return self.current_cost_u
-
-    def l_xx(self, x, u, i, terminal=False):
-        """Second partial derivative of cost function with respect to x.
-
-        Args:
-            x: Current state [state_size].
-            u: Current control [action_size]. None if terminal.
-            i: Current time step.
-            terminal: Compute terminal cost. Default: False.
-
-        Returns:
-            d^2l/dx^2 [state_size, state_size].
-        """
-        if terminal:
-            z = np.hstack([x, i])
-            return np.array(self._l_xx_terminal(*z))
-
-        z = np.hstack([x, u, i])
-        return np.array(self._l_xx(*z))
+        return self.current_cost_xx
 
     def l_ux(self, x, u, i, terminal=False):
         """Second partial derivative of cost function with respect to u and x.
