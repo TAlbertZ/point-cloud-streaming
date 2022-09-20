@@ -19,6 +19,8 @@ class FrameWeightType(Enum):
 	EXP_DECREASE = 2
 	FOV_PRED_ACCURACY = 3 # based on fov overlap ratio between pred and true
 
+DEVELOP_AT_LAB = False
+
 WEIGHT_VARIANCE = 1
 
 TILE_UTILITY_COEF = np.array([-0.7834842486065501, -0.03049975, 2.78785111, -1.4918287, 0.26403939]) # a0 is intercept, a0~a4
@@ -119,6 +121,8 @@ PATH_NUM_PTS_VERSIONS = '../psnr_weights/num_pts_versions_3x300x16x16x16.pkl'
 BANDWIDTH_ORACLE_KNOWN = True
 if MMSYS_HYBRID_TILING:
 	BANDWIDTH_ORACLE_KNOWN = True
+
+FOV_ORACLE_KNOW = True
 
 Mbps_TO_Bps = 1e6 / 8
 

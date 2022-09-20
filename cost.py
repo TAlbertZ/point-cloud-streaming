@@ -15,20 +15,21 @@
 """Instantaneous Cost Function."""
 
 import numpy as np
+import logging
 from scipy.optimize import approx_fprime
 
 import params
 from params import FrameWeightType
 
 
-class AutoDiffCost(Cost):
+class AutoDiffCost():
     """Auto-differentiated Instantaneous Cost.
 
     NOTE: The terminal cost needs to at most be a function of x and i, whereas
           the non-terminal cost can be a function of x, u and i.
     """
 
-    def __init__(self, l, l_terminal, x_inputs, u_inputs, i=None, **kwargs):
+    def __init__(self):
         """Constructs an AutoDiffCost.
 
         Args:
@@ -135,7 +136,7 @@ class AutoDiffCost(Cost):
         #     return np.asscalar(self._l_terminal(*z))
 
         ############### quality_sum ##########
-        Self.max_rates = rate_versions[0]
+        self.max_rates = rate_versions[0]
         self.current_cost = 0
         self.current_state_size = x.shape[0]
         self.dynamics = dynamics
@@ -165,9 +166,36 @@ class AutoDiffCost(Cost):
         self.viewing_probability_of_interest = self.viewing_probability[
             i * params.FPS:(i + 1) * params.FPS].copy()
 
-        # tiles that finish updating, i.e., the first params.FPS framess
-        self.tile_of_interest_pos = self.viewing_probability[i * params.FPS:(
-            i + 1) * params.FPS].nonzero()
+        # at the beginning of streaming, buffer is almost empty
+        # quality = 0
+        if not self.viewing_probability_of_interest.any():
+            # only barrier functions play a role
+            self.zero_bound_barrier = -np.sum(np.log(u))
+            self.updated_tiles_pos = self.viewing_probability[
+                i * params.FPS:i * params.FPS +
+                params.TARGET_LATENCY].nonzero()
+
+            # looks wierd here, that's because the video is played repeatedly, so
+            # every 1s the 'self.max_rates' should be circularly shifted!
+            self.max_rates_cur_step = np.concatenate(
+                (self.max_rates[self.start_frame_idx_within_video:],
+                 self.max_rates[:self.start_frame_idx_within_video]),
+                axis=0)[self.updated_tiles_pos]
+            self.upper_bound_barrier = -np.sum(
+                np.log(self.max_rates_cur_step -
+                       self.dynamics.updated_current_state))
+
+            self.sum_u = np.sum(u)
+            self.bw_bound_barrier = -np.log(self.bandwidth_budget[i] -
+                                            self.sum_u)
+
+            self.current_cost = self.zero_bound_barrier + self.upper_bound_barrier + self.bw_bound_barrier
+
+            return self.current_cost
+
+        # tiles that finish updating, i.e., the first params.FPS frames
+        self.tile_of_interest_pos = self.viewing_probability_of_interest.nonzero(
+        )
         self.tile_a_cur_step = self.tile_a[self.start_frame_idx_within_video:
                                            self.start_frame_idx_within_video +
                                            params.FPS][
@@ -177,12 +205,13 @@ class AutoDiffCost(Cost):
                                            params.FPS][
                                                self.tile_of_interest_pos]
 
+        self.distances = np.array(self.distances)
         self.distance_of_interest = self.distances[i * params.FPS:(
             i + 1) * params.FPS][self.tile_of_interest_pos]
         self.frame_weights = np.ones_like(self.tiles_rates_to_be_watched)
         if params.FRAME_WEIGHT_TYPE == FrameWeightType.CONST:
             self.frame_weights = np.ones_like(self.tiles_rates_to_be_watched)
-        ### todo by Tongyu: add more frame weight types
+        ### TODO by Tongyu: add more frame weight types
 
         self.theta_of_interest = params.TILE_SIDE_LEN / self.distance_of_interest
         self.num_points = self.tile_a_cur_step * self.tiles_rates_to_be_watched + self.tile_b_cur_step
@@ -220,41 +249,27 @@ class AutoDiffCost(Cost):
             self.tile_of_interest_pos] = np.arange(
                 self.dynamics.num_old_tiles_removed_from_current_state)
 
-        # params.FPS elements, each of which is a list having two arrays
-        # [0] for smaller-index frame, [1] for larger-index frame
-        # this stores indexes for indexing self.quality_tiles!!
-        # Then variance can be calculated for batch of tiles!
-        self.overlap_tiles_index_adjacent_frames = []
+        tile_of_interest_pos_prev_unupdateable_fr = buffer_[params.FPS -
+                                                            1].nonzero()
+        viewing_probability_prev_unupdateable_fr = np.zeros_like(
+            buffer_[params.FPS - 1])
+        viewing_probability_prev_unupdateable_fr[
+            tile_of_interest_pos_prev_unupdateable_fr] = 1
 
-        # overlap is the tiles that are not empty in both current and previous
-        # frames. Here is the overlap between the 1st frame_of_interest (31st
-        # frame in current buffer) and 30th frame in buffer.
-        # each element of overlap_pos has shape: [NUM_TILES_PER_SIDE_IN_A_FRAME, ..., ...]
-        overlap_pos = []
-        overlap_pos.append(
-            np.where((buffer_[params.FPS - 1] != 0)
-                     & (self.order_nonzero_view_prob_of_interest[0] != 0)))
-
-        # this stores indexes for self.quality_tiles to index!! Then variance
-        # can be calculated for batch of tiles!
-        self.overlap_tiles_index_adjacent_frames.append(
-            self.order_nonzero_view_prob_of_interest[0][overlap_pos[0]])
-        self.quality_diff[0][overlap_pos[0]] = buffer_[params.FPS - 1][
-            overlap_pos[0]] - self.quality_tiles[
-                self.overlap_tiles_index_adjacent_frames[0]]
-        self.mask_overlap_tiles_in_mat[0][overlap_pos[0]] = 1
-        self.num_overlap_tiles_adjacent_frames[0] = len(overlap_pos[0][0])
-        self.quality_var_adjacent_frames[0] = np.sum(
-            self.quality_diff[0]**
-            2) / self.num_overlap_tiles_adjacent_frames[0]
+        self.mask_overlap_tiles_in_mat[
+            0] = viewing_probability_prev_unupdateable_fr * self.viewing_probability_of_interest[
+                0]
+        self.quality_diff[0] = (
+            buffer_[params.FPS - 1] -
+            self.quality_tiles_in_mat[0]) * self.mask_overlap_tiles_in_mat[0]
+        self.num_overlap_tiles_adjacent_frames[0] = np.count_nonzero(
+            self.quality_diff[0])
+        if self.num_overlap_tiles_adjacent_frames[0] != 0:
+            self.quality_var_adjacent_frames[0] = np.sum(
+                self.quality_diff[0]**
+                2) / self.num_overlap_tiles_adjacent_frames[0]
 
         for frame_idx in range(1, params.FPS):
-            overlap_pos.append(
-                np.where((self.order_nonzero_view_prob_of_interest[frame_idx -
-                                                                   1] != 0)
-                         & (self.order_nonzero_view_prob_of_interest[frame_idx]
-                            != 0)))
-
             # a mask for overlapped tiles in each pair of adjacent frames
             self.mask_overlap_tiles_in_mat[
                 frame_idx] = self.viewing_probability_of_interest[
@@ -264,9 +279,7 @@ class AutoDiffCost(Cost):
             self.quality_diff[frame_idx] = (
                 self.quality_tiles_in_mat[frame_idx - 1] -
                 self.quality_tiles_in_mat[frame_idx]
-            ) * self.viewing_probability_of_interest[
-                frame_idx -
-                1] * self.viewing_probability_of_interest[frame_idx]
+            ) * self.mask_overlap_tiles_in_mat[frame_idx]
 
             self.num_overlap_tiles_adjacent_frames[
                 frame_idx] = np.count_nonzero(self.quality_diff[frame_idx])
@@ -306,8 +319,11 @@ class AutoDiffCost(Cost):
         # because only these tiles finish being updated and to be involved in
         # final visual quality.
         self.lower_bound_barrier = -np.sum(
-            np.log(self.dynamics.updated_current_state[:params.FPS] +
-                   self.b_updated_tiles / self.a_updated_tiles))
+            np.log(
+                self.dynamics.
+                updated_current_state[:self.dynamics.
+                                      num_old_tiles_removed_from_current_state]
+                + self.b_updated_tiles / self.a_updated_tiles))
 
         self.sum_u = np.sum(u)
         self.bw_bound_barrier = -np.log(self.bandwidth_budget[i] - self.sum_u)
@@ -340,6 +356,17 @@ class AutoDiffCost(Cost):
         self.upper_bound_barrier_x = np.zeros((self.current_state_size, ))
         self.lower_bound_barrier_x = np.zeros((self.current_state_size, ))
 
+        # at the beginning of streaming, buffer is almost empty
+        # quality = 0
+        if not self.viewing_probability_of_interest.any():
+            # only barrier functions play a role
+            self.upper_bound_barrier_x = 1 / (
+                self.max_rates_cur_step - self.dynamics.updated_current_state)
+
+            self.current_cost_x = self.upper_bound_barrier_x
+
+            return self.current_cost_x
+
         ################# quality_sum_x ####################
         self.quality_tiles_wrt_log_fang = self.tile_utility_coef[
             2] + 2 * self.tile_utility_coef[
@@ -355,7 +382,7 @@ class AutoDiffCost(Cost):
 
         ################# quality_var_x ####################
 
-        # todo by Tongyu: assign equation number in the paper for "normalized_mask_overlap_tiles_in_mat"
+        # TODO by Tongyu: assign equation number in the paper for "normalized_mask_overlap_tiles_in_mat"
         # 2nd addition term of equation (?) in the paper
         # for calculation of quality_var_xx
         self.normalized_mask_overlap_tiles_in_mat = np.zeros(
@@ -363,7 +390,7 @@ class AutoDiffCost(Cost):
              params.NUM_TILES_PER_SIDE_IN_A_FRAME,
              params.NUM_TILES_PER_SIDE_IN_A_FRAME))
 
-        # todo by Tongyu: assign equation number in the paper for "normalized_quality_diff_in_mat "
+        # TODO by Tongyu: assign equation number in the paper for "normalized_quality_diff_in_mat "
         # 2nd multiplication factor of equation (?) in the paper
         self.normalized_quality_diff_in_mat = np.zeros(
             (params.FPS, params.NUM_TILES_PER_SIDE_IN_A_FRAME,
@@ -413,7 +440,8 @@ class AutoDiffCost(Cost):
         ################# barrier functions ##########################
         self.upper_bound_barrier_x = 1 / (self.max_rates_cur_step -
                                           self.dynamics.updated_current_state)
-        self.lower_bound_barrier_x[self.tile_of_interest_pos] = -1 / (
+        self.lower_bound_barrier_x[:self.dynamics.
+                                  num_old_tiles_removed_from_current_state] = -1 / (
             self.dynamics.
             updated_current_state[:self.dynamics.
                                   num_old_tiles_removed_from_current_state] +
@@ -438,6 +466,18 @@ class AutoDiffCost(Cost):
 
         ################# initialization ####################
         self.current_cost_u = np.zeros((self.current_state_size, ))
+
+        # at the beginning of streaming, buffer is almost empty
+        # quality = 0
+        if not self.viewing_probability_of_interest.any():
+            # only barrier functions play a role
+            self.zero_bound_barrier_u = -1 / u
+            self.upper_bound_barrier_u = self.upper_bound_barrier_x.copy()
+            self.bw_bound_barrier_u = 1 / (self.bandwidth_budget[i] - self.sum_u)
+
+            self.current_cost_u = self.zero_bound_barrier_u + self.upper_bound_barrier_u + self.bw_bound_barrier_u
+
+            return self.current_cost_u
 
         ################# quality_sum_u ####################
         self.quality_sum_u = self.quality_sum_x.copy()
@@ -485,6 +525,18 @@ class AutoDiffCost(Cost):
             (self.current_state_size, self.current_state_size))
         self.lower_bound_barrier_xx = np.zeros(
             (self.current_state_size, self.current_state_size))
+
+        # at the beginning of streaming, buffer is almost empty
+        # quality = 0
+        if not self.viewing_probability_of_interest.any():
+            # only barrier functions play a role
+            np.fill_diagonal(
+                self.upper_bound_barrier_xx, -1 /
+                (self.max_rates_cur_step - self.dynamics.updated_current_state)**2)
+
+            self.current_cost_xx = self.upper_bound_barrier_xx
+
+            return self.current_cost_xx
 
         ################# quality_sum_xx ####################
         self.quality_tiles_sec_deriv_wrt_log_fang = self.tile_utility_coef[
@@ -571,6 +623,15 @@ class AutoDiffCost(Cost):
         Returns:
             d^2l/dudx [current_action_size, current_state_size].
         """
+        # at the beginning of streaming, buffer is almost empty
+        # quality = 0
+        if not self.viewing_probability_of_interest.any():
+            # only barrier functions play a role
+            self.upper_bound_barrier_ux = self.upper_bound_barrier_xx.copy()
+
+            self.current_cost_ux = self.upper_bound_barrier_ux
+            return self.current_cost_ux
+
         ################# quality_sum_ux ####################
         self.quality_sum_ux = self.quality_sum_xx.copy()
         self.weighted_quality_sum_ux = self.weighted_quality_sum_xx.copy()
@@ -598,6 +659,22 @@ class AutoDiffCost(Cost):
         Returns:
             d^2l/du^2 [current_action_size, current_action_size].
         """
+        # at the beginning of streaming, buffer is almost empty
+        # quality = 0
+        if not self.viewing_probability_of_interest.any():
+            # only barrier functions play a role
+            self.zero_bound_barrier_uu = np.eye(self.current_action_size) / u**2
+            self.upper_bound_barrier_uu = self.upper_bound_barrier_xx.copy()
+
+            # there exists non-zero mixed 2nd-order partial derivatives for bw_bound_barrier function!!
+            self.bw_bound_barrier_uu = np.full(
+                (self.current_action_size, self.current_action_size),
+                -1 / (self.bandwidth_budget[i] - self.sum_u)**2)
+
+            self.current_cost_uu = self.zero_bound_barrier_uu + self.upper_bound_barrier_uu + self.bw_bound_barrier_uu
+
+            return self.current_cost_uu
+
         ################# quality_sum_uu ####################
         self.quality_sum_uu = self.quality_sum_xx.copy()
         self.weighted_quality_sum_uu = self.weighted_quality_sum_xx.copy()

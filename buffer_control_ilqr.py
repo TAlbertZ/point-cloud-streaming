@@ -3,6 +3,7 @@ import pickle as pk
 import pdb
 import math
 import time
+import logging
 
 import params
 from params import Algo
@@ -36,21 +37,9 @@ class Buffer():
         # which contains byte sizes of all tiles
         self.buffer = []
 
-        self.max_tile_sizes = qr_weights_obj.rate_versions[0]  # 16x16x16
-        tmp = np.expand_dims(self.max_tile_sizes.copy(), axis=0)
-        self.max_tile_sizes_frames = np.repeat(
-            tmp.copy(),
-            self.buffer_length + params.FPS * params.UPDATE_FREQ -
-            params.TIME_GAP_BETWEEN_NOW_AND_FIRST_FRAME_TO_UPDATE * params.FPS,
-            axis=0)
+        self.max_tile_sizes = qr_weights_obj.rate_versions[0]  # 300x16x16x16
 
-        self.min_tile_sizes = qr_weights_obj.rate_versions[2]  # 16x16x16
-        tmp = np.expand_dims(self.min_tile_sizes.copy(), axis=0)
-        self.min_tile_sizes_frames = np.repeat(
-            tmp.copy(),
-            self.buffer_length + params.FPS * params.UPDATE_FREQ -
-            params.TIME_GAP_BETWEEN_NOW_AND_FIRST_FRAME_TO_UPDATE * params.FPS,
-            axis=0)
+        self.min_tile_sizes = qr_weights_obj.rate_versions[2]  # 300x16x16x16
 
         self.fov_traces_obj = fov_traces_obj
         self.valid_tiles_obj = valid_tiles_obj
@@ -150,10 +139,12 @@ class Buffer():
                 self.true_viewpoints[key].append([])
                 self.fov_predict_accuracy_trace[key].append([])
 
-        for frame_idx in range(
-                self.buffer_length + params.FPS * params.UPDATE_FREQ -
-                params.TIME_GAP_BETWEEN_NOW_AND_FIRST_FRAME_TO_UPDATE *
-                params.FPS):
+        if params.ALGO == Algo.ILQR:
+            overlap_ratio_hist_len = self.buffer_length + params.FPS * params.UPDATE_FREQ - params.TIME_GAP_BETWEEN_NOW_AND_FIRST_FRAME_TO_UPDATE * params.FPS + (
+                params.ILQR_HORIZON - 1) * params.FPS
+        else:
+            overlap_ratio_hist_len = self.buffer_length + params.FPS * params.UPDATE_FREQ - params.TIME_GAP_BETWEEN_NOW_AND_FIRST_FRAME_TO_UPDATE * params.FPS
+        for frame_idx in range(overlap_ratio_hist_len):
             self.overlap_ratio_history.append([])
             for _ in range(params.OVERLAP_RATIO_HISTORY_WIN_LENGTH):
                 self.overlap_ratio_history[frame_idx].append(1.0)
@@ -449,14 +440,23 @@ class Buffer():
         ##################### predict viewpoint #######################
         update_start_idx = self.current_viewing_frame_idx + params.TIME_GAP_BETWEEN_NOW_AND_FIRST_FRAME_TO_UPDATE * params.FPS + 1
         update_end_idx = self.current_viewing_frame_idx + self.buffer_length + params.FPS * params.UPDATE_FREQ
+        logging.debug('Updating frame %d to %d', update_start_idx, update_end_idx)
 
         self.start_time = time.time()
 
-        predicted_viewpoints = self.predict_viewpoint(
-            predict_start_idx=update_start_idx, predict_end_idx=update_end_idx)
+        if params.ALGO == Algo.ILQR:
+            predict_end_idx = update_end_idx + (params.ILQR_HORIZON -
+                                                1) * params.FPS
+        else:
+            predict_end_idx = update_end_idx
 
-        print("predict_viewpoint--- ",
-              time.time() - self.start_time, " seconds ---")
+        predicted_viewpoints = self.predict_viewpoint(
+            predict_start_idx=update_start_idx,
+            predict_end_idx=predict_end_idx)
+
+        # print("predict_viewpoint--- ",
+        #       time.time() - self.start_time, " seconds ---")
+        logging.debug('predict_viewpoint--- %f seconds', time.time() - self.start_time)
 
         for key in self.true_viewpoints.keys():
             for frame_idx in range(update_end_idx - update_start_idx + 1):
@@ -478,7 +478,7 @@ class Buffer():
                     self.fov_predict_accuracy_trace[key][frame_idx].append(
                         abs(predicted_viewpoint_at_this_dof -
                             true_viewpoint_at_this_dof))
-        # pdb.set_trace()
+
         print("fov_predict_accuracy_trace--- ",
               time.time() - self.start_time, " seconds ---")
         #################################################################
@@ -521,16 +521,21 @@ class Buffer():
                 predicted_bandwidth_budget * params.Mbps_TO_Bps,
                 update_start_idx, update_end_idx)
         elif params.ALGO == Algo.ILQR:
-            tiles_rate_solution, buffered_tiles_sizes, sum_solution_rate, sum_r0, sorted_z_weights = self.iterate_LQR(
+            tiles_rate_solution, buffered_tiles_sizes, sum_solution_rate, sum_r0 = self.iterate_LQR(
                 distances, viewing_probability,
                 predicted_bandwidth_budget * params.Mbps_TO_Bps,
                 update_start_idx, update_end_idx)
         else:
             pass
 
-        print("kkt--- ", time.time() - self.start_time, " seconds ---")
+        if params.ALGO == Algo.KKT:
+            print("kkt--- ", time.time() - self.start_time, " seconds ---")
+        elif params.ALGO == Algo.ILQR:
+            print("ilqr--- ", time.time() - self.start_time, " seconds ---")
+        else:
+            pass
 
-        # update buffer following kkt output
+        # update buffer following tiles_rate_solution output by algorithm
         for _ in range(params.FPS * params.UPDATE_FREQ):
             self.buffer.append(
                 np.zeros((params.NUM_TILES_PER_SIDE_IN_A_FRAME,
@@ -960,6 +965,8 @@ class Buffer():
 		"""
         J = map(lambda args: self.cost.l(*args), zip(xs[:-1], us,
                                                      range(self.N)))
+        return sum(J)
+        # do not have cost-to-go value for point cloud streaming
         return sum(J) + self.cost.l(
             xs[-1], None, self.N, terminal=True, get_Q=get_Q)
 
@@ -1025,12 +1032,37 @@ class Buffer():
 
         xs[0] = x0
         for i in range(N):
+            logging.debug('%dth time step of iLQR iteration', i)
             x = xs[i]
+
+            # state/action sizes are different in every iteration
+            if isinstance(us[i], float):
+                # tiles of interest are different in every iteration
+                tile_of_interest_pos = viewing_probability[
+                    i * params.FPS:i * params.FPS +
+                    params.TARGET_LATENCY].nonzero()
+
+                # looks wierd here, that's because the video is played repeatedly, so
+                # every 1s the 'self.max_tile_sizes' and 'self.min_tile_sizes' should be circularly shifted!
+                rate_version_start_idx = (update_start_idx + i * params.FPS) % params.BUFFER_LENGTH
+                max_rates_cur_step = np.concatenate(
+                    (self.max_tile_sizes[rate_version_start_idx:],
+                     self.max_tile_sizes[:rate_version_start_idx]),
+                    axis=0)
+
+                min_rates_cur_step = np.concatenate(
+                    (self.min_tile_sizes[rate_version_start_idx:],
+                     self.min_tile_sizes[:rate_version_start_idx]),
+                    axis=0)
+
+                us[i] = np.random.uniform(
+                    min_rates_cur_step[tile_of_interest_pos],
+                    max_rates_cur_step[tile_of_interest_pos], (len(xs[i]), ))
             u = us[i]
 
             start_time = time.time()
-            xs[i + 1] = self.dynamics.f(x, u, i, bandwidth_budget,
-                                        viewing_probability)
+            xs[i + 1] = self.dynamics.f(x, u, i, viewing_probability)
+
             # print("f--- ", time.time() - start_time, " seconds ---")
 
             F_x[i] = self.dynamics.f_x(x, u, i)
@@ -1077,9 +1109,10 @@ class Buffer():
                 F_uu[i] = self.dynamics.f_uu(x, u, i)
 
         x = xs[-1]
-        L[-1] = self.cost.l(x, None, N, terminal=True, get_Q=get_Q)
-        L_x[-1] = self.cost.l_x(x, None, N, terminal=True, get_Qx=get_Qx)
-        L_xx[-1] = self.cost.l_xx(x, None, N, terminal=True, get_Qxx=get_Qxx)
+        # may not need cost to go value for point cloud streaming
+        # L[-1] = self.cost.l(x, None, N, terminal=True, get_Q=get_Q)
+        # L_x[-1] = self.cost.l_x(x, None, N, terminal=True, get_Qx=get_Qx)
+        # L_xx[-1] = self.cost.l_xx(x, None, N, terminal=True, get_Qxx=get_Qxx)
 
         return xs, F_x, F_u, L, L_x, L_u, L_xx, L_ux, L_uu, F_xx, F_ux, F_uu
 
@@ -1148,6 +1181,10 @@ class Buffer():
             V_xx += K[i].T.dot(Q_ux) + Q_ux.T.dot(K[i])
             V_xx = 0.5 * (V_xx + V_xx.T)  # To maintain symmetry.
 
+        return k, K
+
+        # each element of k (or K) has different dimension,
+        # so impossible to be converted to array.
         return np.array(k), np.array(K)
 
     def _Q(self,
@@ -1230,13 +1267,14 @@ class Buffer():
                           params.NUM_TILES_PER_SIDE_IN_A_FRAME)))
         self.buffered_tiles_sizes = np.array(
             self.buffered_tiles_sizes)  # current state
+        viewing_probability = np.array(viewing_probability)
         tile_of_interest_pos = viewing_probability[:params.
                                                    TARGET_LATENCY].nonzero()
         x0 = self.buffered_tiles_sizes[tile_of_interest_pos]
 
         # each tile has a 4 tuple location: (frame_idx, x, y, z)
         # tiles_rate_solution = params.MAX_TILE_SIZE * np.ones((num_frames_to_update, params.NUM_TILES_PER_SIDE_IN_A_FRAME, params.NUM_TILES_PER_SIDE_IN_A_FRAME, params.NUM_TILES_PER_SIDE_IN_A_FRAME))
-        tiles_rate_solution = buffered_tiles_sizes.copy()
+        tiles_rate_solution = self.buffered_tiles_sizes.copy()
 
         action_size = x0.shape[0]
         state_size = action_size
@@ -1252,9 +1290,25 @@ class Buffer():
         # Backtracking line search candidates 0 < alpha <= 1.
         alphas = 1.1**(-np.arange(10)**2)
 
+        # looks wierd here, that's because the video is played repeatedly, so
+        # every 1s the 'self.max_tile_sizes' and 'self.min_tile_sizes' should be circularly shifted!
+        self.max_rates_cur_step = np.concatenate(
+            (self.max_tile_sizes[update_start_idx:],
+             self.max_tile_sizes[:update_start_idx]),
+            axis=0)
+
+        self.min_rates_cur_step = np.concatenate(
+            (self.min_tile_sizes[update_start_idx:],
+             self.min_tile_sizes[:update_start_idx]),
+            axis=0)
+
         # us = np.random.uniform(0.1, 1, (self.n_step, action_size)) # initialize actions
-        self.us = [0.0] * self.N
-        self.us[0] = np.random.uniform(0.1, 1, (action_size, ))
+        us = [0.0] * self.N
+        us[0] = np.random.uniform(
+            self.min_rates_cur_step[tile_of_interest_pos],
+            self.max_rates_cur_step[tile_of_interest_pos], (action_size, ))
+        logging.debug('action size: %d; length of tile_of_interest_pos: %d', action_size, len(tile_of_interest_pos[0]))
+        pdb.set_trace()
         # us = us_init.copy()
         # print(us)
         k = self._k
@@ -1334,6 +1388,10 @@ class Buffer():
         self._nominal_xs = xs
         self._nominal_us = us
 
+        tiles_rate_solution = us[0]
+        total_size = np.sum(tiles_rate_solution)
+        return tiles_rate_solution, self.buffered_tiles_sizes, total_size, np.sum(
+            self.buffered_tiles_sizes)
         return xs, us
 
         # VT = 0
@@ -1499,7 +1557,7 @@ class Buffer():
         # # s_idx = self.translate_to_speed_idx()
         # s_idx = self.translate_to_speed_idx_accu()
         # # s_idx = self.translate_to_speed_idx_accu_new()
-        return r_idx, s_idx
+        # return r_idx, s_idx
 
     def RUMA(self, distances, z_weights, bandwidth_budget, update_start_idx,
              update_end_idx):
@@ -1519,8 +1577,8 @@ class Buffer():
         tiles_rate_solution = buffered_tiles_sizes.copy()
 
         z_weight_locations = []
-        nonzero_zWeight_locs = np.where((z_weights != 0) & (
-            buffered_tiles_sizes != self.max_tile_sizes_frames))
+        nonzero_zWeight_locs = np.where(
+            (z_weights != 0) & (buffered_tiles_sizes != self.max_tile_sizes))
         nonzero_zWeight_frame_idx = nonzero_zWeight_locs[0]
         nonzero_zWeight_x = nonzero_zWeight_locs[1]
         nonzero_zWeight_y = nonzero_zWeight_locs[2]
@@ -1726,9 +1784,9 @@ class Buffer():
 
         # sum_typeIII_z_weight = 0
 
-        nonzero_zWeight_locs = np.where((z_weights != 0) & (
-            buffered_tiles_sizes != self.max_tile_sizes_frames))
-        tiles_rate_solution[nonzero_zWeight_locs] = self.max_tile_sizes_frames[
+        nonzero_zWeight_locs = np.where(
+            (z_weights != 0) & (buffered_tiles_sizes != self.max_tile_sizes))
+        tiles_rate_solution[nonzero_zWeight_locs] = self.max_tile_sizes[
             nonzero_zWeight_locs]
 
         nonzero_zWeight_frame_idx = nonzero_zWeight_locs[0]
@@ -1740,7 +1798,7 @@ class Buffer():
 
         tiles_values[0][
             nonzero_zWeight_locs] = z_weights[nonzero_zWeight_locs] / (
-                self.max_tile_sizes_frames[nonzero_zWeight_locs] +
+                self.max_tile_sizes[nonzero_zWeight_locs] +
                 self.tile_b_frames[nonzero_zWeight_locs] /
                 self.tile_a_frames[nonzero_zWeight_locs])
 
