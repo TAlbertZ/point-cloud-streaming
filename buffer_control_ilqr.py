@@ -4,6 +4,7 @@ import pdb
 import math
 import time
 import logging
+import matplotlib.pyplot as plt
 
 import params
 from params import Algo
@@ -799,9 +800,7 @@ class Buffer():
                 true_flippedPoints
             )  # Take the convex hull of the center of the sphere and the deformed point cloud
 
-            # fig = plt.figure(figsize = plt.figaspect(0.5))
-            # plt.title('Test Case With A Sphere (Left) and Visible Sphere Viewed From Well Above (Right)')
-            # ax = fig.add_subplot(1,2,1, projection = '3d')
+            # ax = fig.add_subplot(1,2,2, projection = '3d')
             # ax.scatter(flippedPoints[:, 0], flippedPoints[:, 1], flippedPoints[:, 2], c='r', marker='^') # Plot all points
             # ax.set_xlabel('X Axis')
             # ax.set_ylabel('Y Axis')
@@ -811,7 +810,7 @@ class Buffer():
             # HPR_obj.plot(visible_hull_points=myHull)
             # pdb.set_trace()
 
-            ### to do: use gradient descent to optimize radius of HPR ####
+            ### TODO: use gradient descent to optimize radius of HPR ####
 
             ###############################################################
 

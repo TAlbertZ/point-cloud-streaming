@@ -88,6 +88,9 @@ NUM_UPDATES = NUM_FRAMES_VIEWED // FPS
 VIDEO_NAME = 'longdress'
 VALID_TILES_PATH = '../valid_tiles/' + VIDEO_NAME
 
+# only have longdress data
+VALID_TILES_PATH_FROM_NUM_PTS = '../psnr_weights/number_300frames.pkl'
+
 if VIDEO_NAME == 'longdress':
 	fov_traces_file = 'H1_nav.csv'
 elif VIDEO_NAME == 'loot':
