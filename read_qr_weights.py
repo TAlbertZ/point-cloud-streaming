@@ -12,6 +12,8 @@ class QRWeights():
 		read weights of quality-rate function
 	'''
 
+    # TODO by Tongyu: look at same tile index of any two consecutive frames,
+    # their weights a and b should be similar
     def __init__(self):
         self.qr_weights = {"a":np.zeros((params.NUM_FRAMES, params.NUM_TILES_PER_SIDE_IN_A_FRAME, params.NUM_TILES_PER_SIDE_IN_A_FRAME, params.NUM_TILES_PER_SIDE_IN_A_FRAME)), \
                "b":np.zeros((params.NUM_FRAMES, params.NUM_TILES_PER_SIDE_IN_A_FRAME, params.NUM_TILES_PER_SIDE_IN_A_FRAME, params.NUM_TILES_PER_SIDE_IN_A_FRAME))}
@@ -31,6 +33,7 @@ class QRWeights():
             (params.NUM_FRAMES, params.NUM_TILES_PER_SIDE_IN_A_FRAME,
              params.NUM_TILES_PER_SIDE_IN_A_FRAME,
              params.NUM_TILES_PER_SIDE_IN_A_FRAME))
+        pdb.set_trace()
 
     def read_weights(self, path_a, path_b, path_rate_versions,
                      path_num_pts_versions):
@@ -86,5 +89,7 @@ class QRWeights():
         # 	print("max:", np.max(self.rate_versions[rate_version_idx][self.rate_versions[rate_version_idx].nonzero()]))
         # 	self.rate_versions[rate_version_idx][np.where(self.rate_versions[rate_version_idx]==0)] = mean_rate_versions[rate_version_idx]
         nonzero_pos = self.qr_weights["a"].nonzero()
-        self.min_rates[nonzero_pos] = -self.qr_weights["b"][nonzero_pos] / self.qr_weights["a"][nonzero_pos] + 1e-3
-        # pdb.set_trace()
+        self.min_rates[nonzero_pos] = -self.qr_weights["b"][
+            nonzero_pos] / self.qr_weights["a"][nonzero_pos]
+        self.min_rates[self.min_rates < 0] = 0
+        self.min_rates[nonzero_pos] += 1e-3

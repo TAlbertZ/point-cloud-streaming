@@ -10,7 +10,6 @@
 import numpy as np
 import pickle as pk
 import pdb
-import matplotlib.pyplot as plt
 import math
 from mpl_toolkits.mplot3d import Axes3D
 import time
@@ -28,17 +27,25 @@ np.random.seed(7)
 
 
 def main():
-    logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.DEBUG)
+    # TODO by Tongyu: use HPC for multiple experiments, e.g., set different buf length
+    # TODO by Tongyu: set logger for each module!!
+    logging.basicConfig(format='%(levelname)s:%(message)s',
+                        level=logging.DEBUG)
     valid_tiles_obj = ValidTiles()
     # valid_tiles_obj.read_valid_tiles(params.VALID_TILES_PATH + '/')
-    valid_tiles_obj.read_valid_tiles_from_num_points(params.VALID_TILES_PATH_FROM_NUM_PTS)
+    valid_tiles_obj.read_valid_tiles_from_num_points(
+        params.VALID_TILES_PATH_FROM_NUM_PTS)
     # valid_tiles_obj.padding()
     # plot_figs_obj.plot_point_cloud(valid_tiles_obj.valid_tiles[0])
     # pdb.set_trace()
 
     fov_traces_obj = FovTraces()
+    num_frames_load_from_fov_trace = params.NUM_FRAMES_VIEWED
+    if params.ALGO == params.Algo.ILQR:
+        num_frames_load_from_fov_trace = params.NUM_FRAMES_VIEWED + (
+            params.ILQR_HORIZON - 1) * params.FPS
     fov_traces_obj.read_fov_traces_txt(params.FOV_TRACES_PATH,
-                                       params.NUM_FRAMES_VIEWED)
+                                       num_frames_load_from_fov_trace)
     fov_traces_obj.padding_txt()
 
     bw_traces_obj = BandwidthTraces()
@@ -69,11 +76,16 @@ def main():
     # 	buffer_size_trace_lists.append(buffer_obj.buffer_size_trace)
     # 	success_download_rate_trace_lists.append(buffer_obj.success_download_rate_trace)
 
-    buffer_obj = Buffer(fov_traces_obj, bw_traces_obj, valid_tiles_obj,
-                        qr_weights_obj, N=10)
+    buffer_obj = Buffer(fov_traces_obj,
+                        bw_traces_obj,
+                        valid_tiles_obj,
+                        qr_weights_obj,
+                        N=params.ILQR_HORIZON)
     buffer_obj.initialize_buffer()
     for update_time_step in range(params.NUM_UPDATES):
-        logging.info('%dth update step', update_time_step + 1)
+        logging.info(
+            '\n######################## %dth update step #######################',
+            update_time_step + 1)
         buffer_obj.update_tile_size_in_buffer()
         buffer_obj.emit_buffer()
 
@@ -87,30 +99,30 @@ def main():
     # 	tile_sizes_sol = pk.load(infile)
     # infile.close()
 
+    # plot_figs_obj.plot_tile_size_trace(tile_sizes_sol)
+    # plot_figs_obj.plot_num_max_tiles_per_frame(buffer_obj.num_max_tiles_per_frame)
 
-    if params.DEVELOP_AT_LAB:
+    # plot_figs_obj.plot_mean_size_over_tiles_per_frame(
+    #     buffer_obj.mean_size_over_tiles_per_frame)
+    # plot_figs_obj.plot_mean_size_over_tiles_per_fov(
+    #     buffer_obj.mean_size_over_tiles_per_fov)
+    # plot_figs_obj.plot_effective_rate_per_frame(buffer_obj.effective_rate)
+    # # print(buffer_obj.num_valid_tiles_per_frame[params.BUFFER_LENGTH:])
+    # plot_figs_obj.plot_num_valid_tiles_per_frame(
+    #     buffer_obj.num_valid_tiles_per_frame)
+    # # plot_mean_tile_quality_per_frame_trace(buffer_obj.frame_quality, buffer_obj.num_valid_tiles_per_frame)
+    plot_figs_obj.plot_frame_quality_trace(buffer_obj.frame_quality)
+    plot_figs_obj.plot_frame_quality_var_trace(buffer_obj.frame_quality_var)
+    # plot_figs_obj.plot_frame_size_trace(buffer_obj.frame_size_list)
+    # # plot_figs_obj.plot_bandwidth_trace(buffer_obj.plot_bw_trace, buffer_obj.plot_predicted_bw_trace, buffer_obj.bw_predict_accuracy_trace)
+    # # plot_figs_obj.plot_filtered_bandwidth_trace(buffer_obj.plot_bw_trace, buffer_obj.plot_predicted_bw_trace)
+    # plot_figs_obj.plot_buffer_size_trace(buffer_obj.buffer_size_trace)
+    # plot_figs_obj.plot_success_download_rate_trace(
+    #     buffer_obj.success_download_rate_trace)
 
-        # plot_figs_obj.plot_tile_size_trace(tile_sizes_sol)
-        # plot_figs_obj.plot_num_max_tiles_per_frame(buffer_obj.num_max_tiles_per_frame)
-        plot_figs_obj.plot_mean_size_over_tiles_per_frame(
-            buffer_obj.mean_size_over_tiles_per_frame)
-        plot_figs_obj.plot_mean_size_over_tiles_per_fov(
-            buffer_obj.mean_size_over_tiles_per_fov)
-        plot_figs_obj.plot_effective_rate_per_frame(buffer_obj.effective_rate)
-        # print(buffer_obj.num_valid_tiles_per_frame[params.BUFFER_LENGTH:])
-        plot_figs_obj.plot_num_valid_tiles_per_frame(
-            buffer_obj.num_valid_tiles_per_frame)
-        # plot_mean_tile_quality_per_frame_trace(buffer_obj.frame_quality, buffer_obj.num_valid_tiles_per_frame)
-        plot_figs_obj.plot_frame_quality_trace(buffer_obj.frame_quality)
-        plot_figs_obj.print(buffer_obj.frame_quality)
-        plot_figs_obj.plot_frame_size_trace(buffer_obj.frame_size_list)
-        # plot_figs_obj.plot_bandwidth_trace(buffer_obj.plot_bw_trace, buffer_obj.plot_predicted_bw_trace, buffer_obj.bw_predict_accuracy_trace)
-        # plot_figs_obj.plot_filtered_bandwidth_trace(buffer_obj.plot_bw_trace, buffer_obj.plot_predicted_bw_trace)
-        plot_figs_obj.plot_buffer_size_trace(buffer_obj.buffer_size_trace)
-        plot_figs_obj.plot_success_download_rate_trace(
-            buffer_obj.success_download_rate_trace)
-        # plot_figs_obj.plot_fov_prediction_accuracy_series(buffer_obj.fov_predict_accuracy_trace)
-        # plot_figs_obj.plot_mean_fov_prediction_accuracy_for_every_buffer_pos(buffer_obj.fov_predict_accuracy_trace)
+    # plot_figs_obj.plot_fov_prediction_accuracy_series(buffer_obj.fov_predict_accuracy_trace)
+    # plot_figs_obj.plot_mean_fov_prediction_accuracy_for_every_buffer_pos(buffer_obj.fov_predict_accuracy_trace)
+
 
 # def main():
 # 	with open('./tile_sizes_sol_trace.data', 'rb') as infile:

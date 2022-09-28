@@ -16,6 +16,8 @@
 
 import numpy as np
 import logging
+import warnings
+import pdb
 from scipy.optimize import approx_fprime
 
 import params
@@ -78,6 +80,8 @@ class AutoDiffCost():
         self.quality_var = 0.0
         self.tile_utility_coef = params.TILE_UTILITY_COEF
 
+        # warnings.simplefilter('error')
+
     def x(self):
         """The state variables."""
         return self._x_inputs
@@ -90,15 +94,15 @@ class AutoDiffCost():
         """The time step variable."""
         return self._i
 
-    def get_quality_for_tiles(self):
-        self.log_fang = np.log10(self.num_points_per_degree)
+    def get_quality_for_tiles(self, num_points_per_degree, theta_of_interest):
+        self.log_fang = np.log10(num_points_per_degree)
         # tmp = np.array([1, np.log10(1 / self.theta_of_interest), self.log_fang, self.log_fang**2, self.log_fang**3])
-        self.quality_tiles = self.tile_utility_coef[
-            0] + self.tile_utility_coef[1] * np.log10(
-                1 / self.theta_of_interest) + self.tile_utility_coef[
-                    2] * self.log_fang + self.tile_utility_coef[
-                        3] * self.log_fang**2 + self.tile_utility_coef[
-                            4] * self.log_fang**3
+        quality_tiles = self.tile_utility_coef[0] + self.tile_utility_coef[
+            1] * np.log10(1 / theta_of_interest) + self.tile_utility_coef[
+                2] * self.log_fang + self.tile_utility_coef[
+                    3] * self.log_fang**2 + self.tile_utility_coef[
+                        4] * self.log_fang**3
+        return quality_tiles
 
     def l(self,
           x,
@@ -107,7 +111,6 @@ class AutoDiffCost():
           bandwidth_budget,
           viewing_probability,
           distances,
-          overlap_ratio_history,
           tile_a,
           tile_b,
           update_start_idx,
@@ -139,10 +142,10 @@ class AutoDiffCost():
         self.max_rates = rate_versions[0]
         self.current_cost = 0
         self.current_state_size = x.shape[0]
+        self.current_action_size = self.current_state_size
         self.dynamics = dynamics
         self.tile_a = tile_a
         self.tile_b = tile_b
-        self.overlap_ratio_history = overlap_ratio_history
         self.viewing_probability = viewing_probability
         self.distances = distances
         self.bandwidth_budget = bandwidth_budget
@@ -159,8 +162,10 @@ class AutoDiffCost():
                                                                              .
                                                                              num_old_tiles_removed_from_current_state].copy(
                                                                              )
-        self.start_frame_idx_within_video = (
-            self.update_start_idx + i * params.FPS) % params.TARGET_LATENCY
+
+        # TODO by Tongyu: correct start_frame_idx_within_video, it should be exactly equal to self.tile_a_start_idx
+        start_frame_idx_within_video = (self.update_start_idx +
+                                        i * params.FPS) % params.TARGET_LATENCY
 
         # shape: [FPS, NUM_TILES_PER_SIDE_IN_A_FRAME, ..., ...]
         self.viewing_probability_of_interest = self.viewing_probability[
@@ -170,22 +175,53 @@ class AutoDiffCost():
         # quality = 0
         if not self.viewing_probability_of_interest.any():
             # only barrier functions play a role
-            self.zero_bound_barrier = -np.sum(np.log(u))
+            try:
+                self.zero_bound_barrier = -np.sum(np.log(u))
+            except Exception as err:
+                # warnings.warn(str(err))
+                logging.warning(str(err))
+                pdb.set_trace()
             self.updated_tiles_pos = self.viewing_probability[
                 i * params.FPS:i * params.FPS +
                 params.TARGET_LATENCY].nonzero()
+            # logging.debug('updated_tiles_pos %s', self.updated_tiles_pos)
+            # logging.debug(':start_frame_idx_within_video %s', self.start_frame_idx_within_video)
 
-            # looks wierd here, that's because the video is played repeatedly, so
-            # every 1s the 'self.max_rates' should be circularly shifted!
-            self.max_rates_cur_step = np.concatenate(
-                (self.max_rates[self.start_frame_idx_within_video:],
-                 self.max_rates[:self.start_frame_idx_within_video]),
-                axis=0)[self.updated_tiles_pos]
-            self.upper_bound_barrier = -np.sum(
-                np.log(self.max_rates_cur_step -
-                       self.dynamics.updated_current_state))
+            update_time_step = self.update_start_idx // params.FPS
+            # buffer is not fully occupied yet
+            if update_time_step + i < params.TARGET_LATENCY // params.FPS:
+                self.max_rates_cur_step = np.concatenate(
+                    (np.zeros(
+                        (params.TARGET_LATENCY - start_frame_idx_within_video,
+                         params.NUM_TILES_PER_SIDE_IN_A_FRAME,
+                         params.NUM_TILES_PER_SIDE_IN_A_FRAME,
+                         params.NUM_TILES_PER_SIDE_IN_A_FRAME)),
+                     self.max_rates[:start_frame_idx_within_video]),
+                    axis=0)[self.updated_tiles_pos]
+
+            else:
+                # looks wierd here, that's because the video is played repeatedly, so
+                # every 1s the 'self.max_rates' should be circularly shifted!
+                self.max_rates_cur_step = np.concatenate(
+                    (self.max_rates[(update_start_idx + i * params.FPS -
+                                     params.TARGET_LATENCY) %
+                                    params.NUM_FRAMES:],
+                     self.max_rates[:(update_start_idx + i * params.FPS -
+                                      params.TARGET_LATENCY) %
+                                    params.NUM_FRAMES]),
+                    axis=0)[self.updated_tiles_pos]
+
+            try:
+                self.upper_bound_barrier = -np.sum(
+                    np.log(self.max_rates_cur_step -
+                           self.dynamics.updated_current_state))
+            except Exception as err:
+                # warnings.warn(str(err))
+                logging.warning(str(err))
+                pdb.set_trace()
 
             self.sum_u = np.sum(u)
+
             self.bw_bound_barrier = -np.log(self.bandwidth_budget[i] -
                                             self.sum_u)
 
@@ -196,14 +232,19 @@ class AutoDiffCost():
         # tiles that finish updating, i.e., the first params.FPS frames
         self.tile_of_interest_pos = self.viewing_probability_of_interest.nonzero(
         )
-        self.tile_a_cur_step = self.tile_a[self.start_frame_idx_within_video:
-                                           self.start_frame_idx_within_video +
-                                           params.FPS][
-                                               self.tile_of_interest_pos]
-        self.tile_b_cur_step = self.tile_b[self.start_frame_idx_within_video:
-                                           self.start_frame_idx_within_video +
-                                           params.FPS][
-                                               self.tile_of_interest_pos]
+
+        # update_start_idx+i*FPS should be >= TARGET_LATENCY here,
+        # because viewing_probability_of_interest.any() is true here (according to previous if(.))
+        assert (self.update_start_idx + i * params.FPS >= params.TARGET_LATENCY
+                ), "update_start_idx + i * FPS should be >= TARGET_LATENCY"
+        self.tile_a_start_idx = (self.update_start_idx + i * params.FPS -
+                                 params.TARGET_LATENCY) % params.NUM_FRAMES
+        self.a_updated_tiles = self.tile_a[
+            self.tile_a_start_idx:self.tile_a_start_idx +
+            params.FPS][self.tile_of_interest_pos]
+        self.b_updated_tiles = self.tile_b[
+            self.tile_a_start_idx:self.tile_a_start_idx +
+            params.FPS][self.tile_of_interest_pos]
 
         self.distances = np.array(self.distances)
         self.distance_of_interest = self.distances[i * params.FPS:(
@@ -214,9 +255,11 @@ class AutoDiffCost():
         ### TODO by Tongyu: add more frame weight types
 
         self.theta_of_interest = params.TILE_SIDE_LEN / self.distance_of_interest
-        self.num_points = self.tile_a_cur_step * self.tiles_rates_to_be_watched + self.tile_b_cur_step
+        self.num_points = self.a_updated_tiles * self.tiles_rates_to_be_watched + self.b_updated_tiles
         self.num_points_per_degree = self.num_points**0.5 / self.theta_of_interest  # f_ang
-        self.get_quality_for_tiles()  # update self.quality_tiles
+        self.quality_tiles = self.get_quality_for_tiles(
+            self.num_points_per_degree,
+            self.theta_of_interest)  # update self.quality_tiles
 
         self.weighted_quality_sum = np.dot(self.quality_tiles,
                                            self.frame_weights.T)
@@ -248,6 +291,8 @@ class AutoDiffCost():
         self.order_nonzero_view_prob_of_interest[
             self.tile_of_interest_pos] = np.arange(
                 self.dynamics.num_old_tiles_removed_from_current_state)
+        self.order_nonzero_view_prob_of_interest = self.order_nonzero_view_prob_of_interest.astype(
+            int)
 
         tile_of_interest_pos_prev_unupdateable_fr = buffer_[params.FPS -
                                                             1].nonzero()
@@ -292,28 +337,45 @@ class AutoDiffCost():
         ##########################################################
 
         ################# barrier functions ##########################
-        self.zero_bound_barrier = -np.sum(np.log(u))
+        try:
+            self.zero_bound_barrier = -np.sum(np.log(u))
+        except Exception as err:
+            # warnings.warn(str(err))
+            logging.warning(str(err))
+            pdb.set_trace()
         self.updated_tiles_pos = self.viewing_probability[
             i * params.FPS:i * params.FPS + params.TARGET_LATENCY].nonzero()
 
-        # looks wierd here, that's because the video is played repeatedly, so
-        # every 1s the 'self.max_rates' should be circularly shifted!
-        self.max_rates_cur_step = np.concatenate(
-            (self.max_rates[self.start_frame_idx_within_video:],
-             self.max_rates[:self.start_frame_idx_within_video]),
-            axis=0)[self.updated_tiles_pos]
-        self.upper_bound_barrier = -np.sum(
-            np.log(self.max_rates_cur_step -
-                   self.dynamics.updated_current_state))
+        update_time_step = self.update_start_idx // params.FPS
+        # buffer is not fully occupied yet
+        if update_time_step + i < params.TARGET_LATENCY // params.FPS:
+            self.max_rates_cur_step = np.concatenate(
+                (np.zeros(
+                    (params.TARGET_LATENCY - start_frame_idx_within_video,
+                     params.NUM_TILES_PER_SIDE_IN_A_FRAME,
+                     params.NUM_TILES_PER_SIDE_IN_A_FRAME,
+                     params.NUM_TILES_PER_SIDE_IN_A_FRAME)),
+                 self.max_rates[:start_frame_idx_within_video]),
+                axis=0)[self.updated_tiles_pos]
 
-        self.a_updated_tiles = np.concatenate(
-            (self.tile_a[self.start_frame_idx_within_video:],
-             self.tile_a[:self.start_frame_idx_within_video]),
-            axis=0)[self.tile_of_interest_pos]  # stores params.FPS frames
-        self.b_updated_tiles = np.concatenate(
-            (self.tile_b[self.start_frame_idx_within_video:],
-             self.tile_b[:self.start_frame_idx_within_video]),
-            axis=0)[self.tile_of_interest_pos]  # stores params.FPS frames
+        else:
+            # looks wierd here, that's because the video is played repeatedly, so
+            # every 1s the 'self.max_rates' should be circularly shifted!
+            self.max_rates_cur_step = np.concatenate(
+                (self.max_rates[(update_start_idx + i * params.FPS -
+                                 params.TARGET_LATENCY) % params.NUM_FRAMES:],
+                 self.max_rates[:(update_start_idx + i * params.FPS -
+                                  params.TARGET_LATENCY) % params.NUM_FRAMES]),
+                axis=0)[self.updated_tiles_pos]
+
+        try:
+            self.upper_bound_barrier = -np.sum(
+                np.log(self.max_rates_cur_step -
+                       self.dynamics.updated_current_state))
+        except Exception as err:
+            # warnings.warn(str(err))
+            logging.warning(str(err))
+            pdb.set_trace()
 
         # only care about the first params.FPS frames among all updated tiles,
         # because only these tiles finish being updated and to be involved in
@@ -372,7 +434,7 @@ class AutoDiffCost():
             2] + 2 * self.tile_utility_coef[
                 3] * self.log_fang + 3 * self.tile_utility_coef[
                     4] * self.log_fang**2
-        self.log_fang_wrt_x = self.tile_a_cur_step / (2 * np.log(10) *
+        self.log_fang_wrt_x = self.a_updated_tiles / (2 * np.log(10) *
                                                       self.num_points)
         self.quality_sum_x[:self.dynamics.
                            num_old_tiles_removed_from_current_state] = self.quality_tiles_wrt_log_fang * self.log_fang_wrt_x
@@ -397,28 +459,49 @@ class AutoDiffCost():
              params.NUM_TILES_PER_SIDE_IN_A_FRAME,
              params.NUM_TILES_PER_SIDE_IN_A_FRAME))
         for frame_idx in range(params.FPS - 1):
+            if self.num_overlap_tiles_adjacent_frames[frame_idx] == 0:
+                quality_diff_first_part = 0
+                mask_first_part = 0
+            else:
+                quality_diff_first_part = -self.quality_diff[
+                    frame_idx] * 2 / self.num_overlap_tiles_adjacent_frames[
+                        frame_idx]
+                mask_first_part = self.mask_overlap_tiles_in_mat[
+                    frame_idx] * 2 / self.num_overlap_tiles_adjacent_frames[
+                        frame_idx]
+
+            if self.num_overlap_tiles_adjacent_frames[frame_idx + 1] == 0:
+                quality_diff_second_part = 0
+                mask_second_part = 0
+            else:
+                quality_diff_second_part = self.quality_diff[
+                    frame_idx +
+                    1] * 2 / self.num_overlap_tiles_adjacent_frames[frame_idx +
+                                                                    1]
+                mask_second_part = self.mask_overlap_tiles_in_mat[
+                    frame_idx +
+                    1] * 2 / self.num_overlap_tiles_adjacent_frames[frame_idx +
+                                                                    1]
+
+            self.normalized_quality_diff_in_mat[
+                frame_idx] = quality_diff_first_part + quality_diff_second_part
+
+            self.normalized_mask_overlap_tiles_in_mat[
+                frame_idx] = mask_first_part + mask_second_part
+
+        if self.num_overlap_tiles_adjacent_frames[frame_idx] == 0:
+            self.normalized_quality_diff_in_mat[frame_idx] = 0
+            self.normalized_mask_overlap_tiles_in_mat[frame_idx] = 0
+        else:
             self.normalized_quality_diff_in_mat[
                 frame_idx] = -self.quality_diff[
                     frame_idx] * 2 / self.num_overlap_tiles_adjacent_frames[
-                        frame_idx] + self.quality_diff[
-                            frame_idx +
-                            1] * 2 / self.num_overlap_tiles_adjacent_frames[
-                                frame_idx + 1]
+                        frame_idx]
 
             self.normalized_mask_overlap_tiles_in_mat[
                 frame_idx] = self.mask_overlap_tiles_in_mat[
                     frame_idx] * 2 / self.num_overlap_tiles_adjacent_frames[
-                        frame_idx] + self.mask_overlap_tiles_in_mat[
-                            frame_idx +
-                            1] * 2 / self.num_overlap_tiles_adjacent_frames[
-                                frame_idx + 1]
-        self.normalized_quality_diff_in_mat[frame_idx] = -self.quality_diff[
-            frame_idx] * 2 / self.num_overlap_tiles_adjacent_frames[frame_idx]
-
-        self.normalized_mask_overlap_tiles_in_mat[
-            frame_idx] = self.mask_overlap_tiles_in_mat[
-                frame_idx] * 2 / self.num_overlap_tiles_adjacent_frames[
-                    frame_idx]
+                        frame_idx]
 
         # map "normalized_quality_diff_in_mat" from matrix to a vector,
         # which corresponds with "quality_sum_x" for multiplication.
@@ -441,11 +524,12 @@ class AutoDiffCost():
         self.upper_bound_barrier_x = 1 / (self.max_rates_cur_step -
                                           self.dynamics.updated_current_state)
         self.lower_bound_barrier_x[:self.dynamics.
-                                  num_old_tiles_removed_from_current_state] = -1 / (
-            self.dynamics.
-            updated_current_state[:self.dynamics.
-                                  num_old_tiles_removed_from_current_state] +
-            self.b_updated_tiles / self.a_updated_tiles)
+                                   num_old_tiles_removed_from_current_state] = -1 / (
+                                       self.dynamics.
+                                       updated_current_state[:self.dynamics.
+                                                             num_old_tiles_removed_from_current_state]
+                                       + self.b_updated_tiles /
+                                       self.a_updated_tiles)
 
         self.current_cost_x = -self.weighted_quality_sum_x + self.quality_var_x * params.WEIGHT_VARIANCE + self.upper_bound_barrier_x + self.lower_bound_barrier_x
 
@@ -473,7 +557,8 @@ class AutoDiffCost():
             # only barrier functions play a role
             self.zero_bound_barrier_u = -1 / u
             self.upper_bound_barrier_u = self.upper_bound_barrier_x.copy()
-            self.bw_bound_barrier_u = 1 / (self.bandwidth_budget[i] - self.sum_u)
+            self.bw_bound_barrier_u = 1 / (self.bandwidth_budget[i] -
+                                           self.sum_u)
 
             self.current_cost_u = self.zero_bound_barrier_u + self.upper_bound_barrier_u + self.bw_bound_barrier_u
 
@@ -510,16 +595,6 @@ class AutoDiffCost():
         """
         ################# initialization ####################
 
-        self.current_cost_xx = np.zeros(
-            (self.current_state_size, self.current_state_size))
-        self.weighted_quality_sum_xx = np.zeros(
-            (self.current_state_size, self.current_state_size))
-        self.quality_sum_xx_diagnl_elems = np.zeros(
-            (self.dynamics.num_old_tiles_removed_from_current_state, ))
-        self.quality_var_xx = np.zeros(
-            (self.current_state_size, self.current_state_size))
-        self.frame_weights_diagnl = np.diag(self.frame_weights)
-
         # zero_bound_barrier_xx and bw_bound_barrier_xx are all 0 since it only depends on actions u
         self.upper_bound_barrier_xx = np.zeros(
             (self.current_state_size, self.current_state_size))
@@ -531,17 +606,28 @@ class AutoDiffCost():
         if not self.viewing_probability_of_interest.any():
             # only barrier functions play a role
             np.fill_diagonal(
-                self.upper_bound_barrier_xx, -1 /
-                (self.max_rates_cur_step - self.dynamics.updated_current_state)**2)
+                self.upper_bound_barrier_xx,
+                -1 / (self.max_rates_cur_step -
+                      self.dynamics.updated_current_state)**2)
 
             self.current_cost_xx = self.upper_bound_barrier_xx
 
             return self.current_cost_xx
 
+        self.current_cost_xx = np.zeros(
+            (self.current_state_size, self.current_state_size))
+        self.weighted_quality_sum_xx = np.zeros(
+            (self.current_state_size, self.current_state_size))
+        self.quality_sum_xx_diagnl_elems = np.zeros(
+            (self.dynamics.num_old_tiles_removed_from_current_state, ))
+        self.quality_var_xx = np.zeros(
+            (self.current_state_size, self.current_state_size))
+        self.frame_weights_diagnl = np.diag(self.frame_weights)
+
         ################# quality_sum_xx ####################
         self.quality_tiles_sec_deriv_wrt_log_fang = self.tile_utility_coef[
             3] * 2 + 6 * self.tile_utility_coef[4] * self.log_fang
-        self.log_fang_wrt_xx = -self.tile_a_cur_step**2 / (2 * np.log(10) *
+        self.log_fang_wrt_xx = -self.a_updated_tiles**2 / (2 * np.log(10) *
                                                            self.num_points**2)
 
         # a vector of diagnal elements of "quality_sum_xx"
@@ -561,7 +647,10 @@ class AutoDiffCost():
         # ------------ 2nd-order partial derivatives for single variable --------------
 
         # a vector of diagnal elements of "quality_var_xx"
-        self.quality_var_xx_diagnl_elems = self.quality_sum_xx_diagnl_elems * self.normalized_quality_diff_in_vec + self.quality_sum_x**2 * self.normalized_mask_overlap_tiles_in_vec
+        self.quality_var_xx_diagnl_elems = self.quality_sum_xx_diagnl_elems * self.normalized_quality_diff_in_vec + self.quality_sum_x[:self
+                                                                                                                                       .dynamics
+                                                                                                                                       .
+                                                                                                                                       num_old_tiles_removed_from_current_state]**2 * self.normalized_mask_overlap_tiles_in_vec
 
         np.fill_diagonal(
             self.
@@ -606,6 +695,7 @@ class AutoDiffCost():
              updated_current_state[:self.dynamics.
                                    num_old_tiles_removed_from_current_state] +
              self.b_updated_tiles / self.a_updated_tiles)**2)
+        # pdb.set_trace()
 
         self.current_cost_xx = -self.weighted_quality_sum_xx + self.quality_var_xx * params.WEIGHT_VARIANCE + self.upper_bound_barrier_xx + self.lower_bound_barrier_xx
 
@@ -633,7 +723,6 @@ class AutoDiffCost():
             return self.current_cost_ux
 
         ################# quality_sum_ux ####################
-        self.quality_sum_ux = self.quality_sum_xx.copy()
         self.weighted_quality_sum_ux = self.weighted_quality_sum_xx.copy()
 
         ################# quality_var_ux ####################
@@ -663,7 +752,8 @@ class AutoDiffCost():
         # quality = 0
         if not self.viewing_probability_of_interest.any():
             # only barrier functions play a role
-            self.zero_bound_barrier_uu = np.eye(self.current_action_size) / u**2
+            self.zero_bound_barrier_uu = np.eye(
+                self.current_action_size) / u**2
             self.upper_bound_barrier_uu = self.upper_bound_barrier_xx.copy()
 
             # there exists non-zero mixed 2nd-order partial derivatives for bw_bound_barrier function!!
@@ -676,7 +766,6 @@ class AutoDiffCost():
             return self.current_cost_uu
 
         ################# quality_sum_uu ####################
-        self.quality_sum_uu = self.quality_sum_xx.copy()
         self.weighted_quality_sum_uu = self.weighted_quality_sum_xx.copy()
 
         ################# quality_var_uu ####################

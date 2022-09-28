@@ -82,13 +82,14 @@ class ValidTiles():
 
         previous_valid_tiles_set = set()
         with open(path, 'rb') as file:
-            num_points_versions = pk.load(file)
+            num_points_versions = pk.load(file) # 3x300x16x16x16
         file.close()
+        sum_num_points_versions = np.sum(num_points_versions, axis=0) # 300x16x16x16
 
         for frame_idx in range(params.NUM_FRAMES):
             current_valid_tiles_set = set()
             # 16*16*16 numpy array indicating which tiles are non-empty
-            valid_tile_this_frame = np.sum(num_points_versions[frame_idx], axis=3)
+            valid_tile_this_frame = sum_num_points_versions[frame_idx]
             valid_pos = valid_tile_this_frame.nonzero()
             valid_tile_this_frame[valid_pos] = 1
 
@@ -110,6 +111,9 @@ class ValidTiles():
                     len(intersect) /
                     self.num_valid_tiles_per_frame[frame_idx - 1])
             previous_valid_tiles_set = current_valid_tiles_set.copy()
+
+        # self.valid_tiles = np.array(self.valid_tiles)
+        # pdb.set_trace()
 
     def convert_pointIdx_to_coordinate(self, x, y, z):
         x = x * params.TILE_SIDE_LEN + params.TILE_SIDE_LEN / 2

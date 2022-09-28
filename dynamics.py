@@ -78,7 +78,7 @@ class AutoDiffDynamics():
             M=self.current_state_size,
             k=self.num_old_tiles_removed_from_current_state)
 
-        return self.f_x
+        return self.dynamic_x
 
     def f_u(self, x, u, i):
         """Partial derivative of dynamics model with respect to u.
@@ -96,4 +96,4 @@ class AutoDiffDynamics():
             M=self.current_action_size,
             k=self.num_old_tiles_removed_from_current_state)
 
-        return self.f_u
+        return self.dynamic_u
