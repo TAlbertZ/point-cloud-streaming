@@ -24,6 +24,9 @@ import params
 from params import FrameWeightType
 
 
+# TODO by Tongyu: check value of quality_sum and quality_var and barriers,
+# set scale params for them, and adjust shapes of barriers,
+# also check frame_quality and frame_quality_var in evaluation module.
 class AutoDiffCost():
     """Auto-differentiated Instantaneous Cost.
 
@@ -80,7 +83,22 @@ class AutoDiffCost():
         self.quality_var = 0.0
         self.tile_utility_coef = params.TILE_UTILITY_COEF
 
+        self.logger = self.set_logger()
+
+        # regard all runtime warnings as errors, for debug use
         # warnings.simplefilter('error')
+
+    def set_logger(self):
+        logger = logging.getLogger(__name__)
+        logger.propagate = False
+        logger.setLevel(logging.DEBUG)
+        console_handler = logging.StreamHandler()
+        formatter = logging.Formatter(
+            '%(levelname)s - %(lineno)d - %(module)s\n%(message)s')
+        console_handler.setFormatter(formatter)
+        logger.addHandler(console_handler)
+
+        return logger
 
     def x(self):
         """The state variables."""
@@ -179,13 +197,13 @@ class AutoDiffCost():
                 self.zero_bound_barrier = -np.sum(np.log(u))
             except Exception as err:
                 # warnings.warn(str(err))
-                logging.warning(str(err))
+                self.logger.warning(str(err))
                 pdb.set_trace()
             self.updated_tiles_pos = self.viewing_probability[
                 i * params.FPS:i * params.FPS +
                 params.TARGET_LATENCY].nonzero()
-            # logging.debug('updated_tiles_pos %s', self.updated_tiles_pos)
-            # logging.debug(':start_frame_idx_within_video %s', self.start_frame_idx_within_video)
+            # self.logger.debug('updated_tiles_pos %s', self.updated_tiles_pos)
+            # self.logger.debug(':start_frame_idx_within_video %s', start_frame_idx_within_video)
 
             update_time_step = self.update_start_idx // params.FPS
             # buffer is not fully occupied yet
@@ -217,7 +235,7 @@ class AutoDiffCost():
                            self.dynamics.updated_current_state))
             except Exception as err:
                 # warnings.warn(str(err))
-                logging.warning(str(err))
+                self.logger.warning(str(err))
                 pdb.set_trace()
 
             self.sum_u = np.sum(u)
@@ -341,7 +359,7 @@ class AutoDiffCost():
             self.zero_bound_barrier = -np.sum(np.log(u))
         except Exception as err:
             # warnings.warn(str(err))
-            logging.warning(str(err))
+            self.logger.warning(str(err))
             pdb.set_trace()
         self.updated_tiles_pos = self.viewing_probability[
             i * params.FPS:i * params.FPS + params.TARGET_LATENCY].nonzero()
@@ -374,7 +392,7 @@ class AutoDiffCost():
                        self.dynamics.updated_current_state))
         except Exception as err:
             # warnings.warn(str(err))
-            logging.warning(str(err))
+            self.logger.warning(str(err))
             pdb.set_trace()
 
         # only care about the first params.FPS frames among all updated tiles,

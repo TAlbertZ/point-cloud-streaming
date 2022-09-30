@@ -26,11 +26,17 @@ from plot_figs import PlotFigs
 np.random.seed(7)
 
 
+def set_loggers():
+    # root logger
+    logging.basicConfig(format='%(message)s - %(lineno)d - %(asctime)s',
+                        level=logging.INFO)
+
+
+# TODO by Tongyu: use HPC for multiple experiments, e.g., set different buf length
+# TODO by Tongyu: compare total number of points, number of nonempty tiles, and average number of points over these tiles, between two ajacent frames;
+#                   also, find if there exists a shift between two frames.
 def main():
-    # TODO by Tongyu: use HPC for multiple experiments, e.g., set different buf length
-    # TODO by Tongyu: set logger for each module!!
-    logging.basicConfig(format='%(levelname)s:%(message)s',
-                        level=logging.DEBUG)
+    set_loggers()
     valid_tiles_obj = ValidTiles()
     # valid_tiles_obj.read_valid_tiles(params.VALID_TILES_PATH + '/')
     valid_tiles_obj.read_valid_tiles_from_num_points(

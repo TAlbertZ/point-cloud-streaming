@@ -33,7 +33,6 @@ class QRWeights():
             (params.NUM_FRAMES, params.NUM_TILES_PER_SIDE_IN_A_FRAME,
              params.NUM_TILES_PER_SIDE_IN_A_FRAME,
              params.NUM_TILES_PER_SIDE_IN_A_FRAME))
-        pdb.set_trace()
 
     def read_weights(self, path_a, path_b, path_rate_versions,
                      path_num_pts_versions):
@@ -52,7 +51,7 @@ class QRWeights():
             self.num_pts_versions = pk.load(file)
         file.close()
 
-        # pdb.set_trace()
+        pdb.set_trace()
 
     def give_every_tile_valid_weights(self):
         # remove nan value

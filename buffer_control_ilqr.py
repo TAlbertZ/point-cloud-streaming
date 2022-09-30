@@ -30,6 +30,10 @@ class Buffer():
                  N,
                  max_reg=1e10,
                  hessians=False):
+
+        self.logger = self.set_logger()
+        # self.plain_logger = logging.getLogger('plain_logger')
+
         self.buffer_length = params.BUFFER_LENGTH  # frame
 
         self.update_step = 0
@@ -224,6 +228,18 @@ class Buffer():
         ##################
 
         #########################
+
+    def set_logger(self):
+        logger = logging.getLogger(__name__)
+        logger.propagate = False
+        logger.setLevel(logging.DEBUG)
+        console_handler = logging.StreamHandler()
+        formatter = logging.Formatter(
+            '%(levelname)s - %(lineno)d - %(module)s\n%(message)s')
+        console_handler.setFormatter(formatter)
+        logger.addHandler(console_handler)
+
+        return logger
 
     def calculate_origin(self, valid_tiles):
         tile_xs, tile_ys, tile_zs = valid_tiles.nonzero()
@@ -449,16 +465,16 @@ class Buffer():
         self.history_bandwidths.append(
             self.bw_traces_obj.bw_trace[self.current_bandwidth_idx])
 
-        print("finish emitting buffer--- ",
-              time.time() - self.start_time, " seconds ---")
+        logging.info("finish emitting buffer--- %f seconds ---",
+                     time.time() - self.start_time)
 
     def update_tile_size_in_buffer(self):
         self.update_step += 1
         ##################### predict viewpoint #######################
         update_start_idx = self.current_viewing_frame_idx + params.TIME_GAP_BETWEEN_NOW_AND_FIRST_FRAME_TO_UPDATE * params.FPS + 1
         update_end_idx = self.current_viewing_frame_idx + self.buffer_length + params.FPS * params.UPDATE_FREQ
-        logging.debug('Updating frame %d to %d', update_start_idx,
-                      update_end_idx)
+        self.logger.debug('Updating frame %d to %d', update_start_idx,
+                          update_end_idx)
 
         self.start_time = time.time()
 
@@ -474,8 +490,8 @@ class Buffer():
 
         # print("predict_viewpoint--- ",
         #       time.time() - self.start_time, " seconds ---")
-        logging.debug('predict_viewpoint--- %f seconds',
-                      time.time() - self.start_time)
+        self.logger.debug('predict_viewpoint--- %f seconds',
+                          time.time() - self.start_time)
 
         for key in self.true_viewpoints.keys():
             for frame_idx in range(update_end_idx - update_start_idx + 1):
@@ -498,15 +514,15 @@ class Buffer():
                         abs(predicted_viewpoint_at_this_dof -
                             true_viewpoint_at_this_dof))
 
-        print("fov_predict_accuracy_trace--- ",
-              time.time() - self.start_time, " seconds ---")
+        logging.info("fov_predict_accuracy_trace--- %f seconds ---",
+                     time.time() - self.start_time)
         #################################################################
 
         viewing_probability, distances = self.calculate_probability_to_be_viewed(
             predicted_viewpoints, update_start_idx, update_end_idx)
 
-        print("viewing_probability--- ",
-              time.time() - self.start_time, " seconds ---")
+        logging.info("viewing_probability--- %f seconds ---",
+                     time.time() - self.start_time)
 
         # calculate distance only for viewable valid tiles
         # distances = self.calculate_distance(predicted_viewpoints)
@@ -514,15 +530,15 @@ class Buffer():
             z_weights = self.calculate_z(viewing_probability, distances,
                                          update_start_idx, update_end_idx)
 
-            print("calculate_z--- ",
-                  time.time() - self.start_time, " seconds ---")
+            logging.info("calculate_z--- %f seconds ---",
+                         time.time() - self.start_time)
 
         # predict bandwidth of future 1s
         predicted_bandwidth_budget = self.predict_bandwidth(
         ) * params.SCALE_BW  # Mbps
 
-        print("predict_bandwidth--- ",
-              time.time() - self.start_time, " seconds ---")
+        logging.info("predict_bandwidth--- %f seconds ---",
+                     time.time() - self.start_time)
 
         if params.ALGO == Algo.MMSYS_HYBRID_TILING:
             tiles_rate_solution, buffered_tiles_sizes, sum_solution_rate, sum_r0, sorted_z_weights = self.hybrid_tiling(
@@ -551,9 +567,11 @@ class Buffer():
             pass
 
         if params.ALGO == Algo.KKT:
-            print("kkt--- ", time.time() - self.start_time, " seconds ---")
+            logging.info("kkt--- %f seconds ---",
+                         time.time() - self.start_time)
         elif params.ALGO == Algo.ILQR:
-            print("ilqr--- ", time.time() - self.start_time, " seconds ---")
+            logging.info("ilqr--- %f seconds ---",
+                         time.time() - self.start_time)
         else:
             pass
 
@@ -577,7 +595,7 @@ class Buffer():
                 1, true_bandwidth_budget * params.Mbps_TO_Bps /
                 consumed_bandwidth)
         else:
-            print("!!!!!!!!! nothing download !!!")
+            logging.info("!!!!!!!!! nothing download !!!")
         # pdb.set_trace()
         if params.ALGO != Algo.ILQR:
             if success_download_rate < 1 - 1e-4:  # 1e-4 is noise error term
@@ -617,8 +635,8 @@ class Buffer():
                 # 	pdb.set_trace()
                 sum_solution_rate = np.sum(tiles_rate_solution)
 
-        print("start updating buffer--- ",
-              time.time() - self.start_time, " seconds ---")
+        logging.info("start updating buffer--- %f seconds ---",
+                     time.time() - self.start_time)
 
         for frame_idx in range(update_start_idx, update_end_idx + 1):
             self.buffer[frame_idx - self.current_viewing_frame_idx -
@@ -634,8 +652,8 @@ class Buffer():
                                               true_bandwidth_budget)  # Mbps
         # pdb.set_trace()
 
-        print("update buffer ends--- ",
-              time.time() - self.start_time, " seconds ---")
+        logging.info("update buffer ends--- %f seconds ---",
+                     time.time() - self.start_time)
 
     def calculate_z(self,
                     viewing_probability,
@@ -1491,7 +1509,7 @@ class Buffer():
         ######################################
 
         # pdb.set_trace()
-        # logging.debug('action size: %d; length of tile_of_interest_pos: %d', action_size, len(tile_of_interest_pos[0]))
+        # self.logger.debug('action size: %d; length of tile_of_interest_pos: %d', action_size, len(tile_of_interest_pos[0]))
         # us = us_init.copy()
         # print(us)
         k = self._k
@@ -1526,8 +1544,8 @@ class Buffer():
 
                 # Backtracking line search.
                 for alpha in alphas:
-                    logging.debug('%dth alpha: %f',
-                                  np.where(alphas == alpha)[0][0], alpha)
+                    self.logger.debug('%dth alpha: %f',
+                                      np.where(alphas == alpha)[0][0], alpha)
                     xs_new, us_new, J_new = self._control(
                         xs, us, k, K, bandwidth_budget, viewing_probability,
                         distances, update_start_idx, update_end_idx, alpha)
@@ -1543,13 +1561,13 @@ class Buffer():
                     #       time.time() - start_time, " seconds ---")
 
                     # TODO by Tongyu: log different parts of cost value, including quality_sum and quality_var, etc.
-                    logging.debug(
+                    self.logger.debug(
                         'J_new = %f, J_opt = %f. J_new < J_opt is %s', J_new,
                         J_opt, str(J_new < J_opt))
 
                     if J_new < J_opt:
-                        logging.debug('improvement is %f',
-                                      np.abs((J_opt - J_new) / J_opt))
+                        self.logger.debug('improvement is %f',
+                                          np.abs((J_opt - J_new) / J_opt))
                         if np.abs((J_opt - J_new) / J_opt) < tol:
                             converged = True
 
@@ -1563,33 +1581,34 @@ class Buffer():
                         self._mu *= self._delta
                         if self._mu <= self._mu_min:
                             self._mu = 0.0
-                        logging.debug('[accepted]. delta = %f, mu = %f',
-                                      self._delta, self._mu)
+                        self.logger.debug('[accepted]. delta = %f, mu = %f',
+                                          self._delta, self._mu)
 
                         # Accept this.
                         accepted = True
-                        logging.debug('accepted is %s', str(accepted))
-                        logging.debug('converged is %s', str(converged))
+                        self.logger.debug('accepted is %s', str(accepted))
+                        self.logger.debug('converged is %s', str(converged))
                         break
-                logging.debug('final accepted in this iter is %s',
-                              str(accepted))
+                self.logger.debug('final accepted in this iter is %s',
+                                  str(accepted))
 
             except np.linalg.LinAlgError as e:
                 # Quu was not positive-definite and this diverged.
                 # Try again with a higher regularization term.
                 # warnings.warn(str(e))
-                logging.warning(str(e))
+                self.logger.warning(str(e))
 
             # tried all alpha's, but still find no better solution than initialized one
             if not accepted:
                 # Increase regularization term.
                 self._delta = max(1.0, self._delta) * self._delta_0
                 self._mu = max(self._mu_min, self._mu * self._delta)
-                logging.debug('[NOT accepted]. delta = %f, mu = %f',
-                              self._delta, self._mu)
+                self.logger.debug('[NOT accepted]. delta = %f, mu = %f',
+                                  self._delta, self._mu)
                 if self._mu_max and self._mu >= self._mu_max:
                     # warnings.warn("exceeded max regularization term")
-                    logging.warning('iLQR: exceeded max regularization term')
+                    self.logger.warning(
+                        'iLQR: exceeded max regularization term')
                     break
 
             if on_iteration:
@@ -1601,8 +1620,8 @@ class Buffer():
             # print(us)
             # pdb.set_trace()
 
-        logging.debug('converged is %s for %dth buf update', str(converged),
-                      update_time_step)
+        self.logger.debug('converged is %s for %dth buf update',
+                          str(converged), update_time_step)
 
         # Store fit parameters.
         self._k = k

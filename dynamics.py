@@ -14,6 +14,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>
 """Dynamics model."""
 
+import logging
 import numpy as np
 from scipy.optimize import approx_fprime
 
@@ -25,6 +26,19 @@ class AutoDiffDynamics():
 
     def __init__(self):
         self.sum_u = None
+        self.logger = self.set_logger()
+
+    def set_logger(self):
+        logger = logging.getLogger(__name__)
+        logger.propagate = False
+        logger.setLevel(logging.DEBUG)
+        console_handler = logging.StreamHandler()
+        formatter = logging.Formatter(
+            '%(levelname)s - %(lineno)d - %(module)s\n%(message)s')
+        console_handler.setFormatter(formatter)
+        logger.addHandler(console_handler)
+
+        return logger
 
     def f(self, x, u, i, viewing_probability):
         """Dynamics model.

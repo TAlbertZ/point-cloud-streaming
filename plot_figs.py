@@ -1,5 +1,6 @@
 import numpy as np
 import pdb
+import os
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
@@ -11,7 +12,12 @@ np.random.seed(7)
 class PlotFigs():
 
     def __init__(self):
-        pass
+        self.directory = './ilqr_results/buf' + str(
+            params.TARGET_LATENCY // params.FPS) + 's'
+
+        # If the directory does not exist, create it
+        if not os.path.exists(self.directory):
+            os.makedirs(self.directory)
 
     def plot_point_cloud(self, frame):
         '''
@@ -36,7 +42,7 @@ class PlotFigs():
         legend = []
         plt.plot(frame_indexes,
                  frame_quality_lists[params.BUFFER_LENGTH:],
-                 linewidth=2,
+                 linewidth=1,
                  color='red')
         # legend.append('constant Wj, know BW')
         # plt.plot(frame_indexes, frame_quality_lists[1][params.TIME_GAP_BETWEEN_NOW_AND_FIRST_FRAME_TO_UPDATE * params.FPS:], linewidth=2, color='blue')
@@ -44,23 +50,24 @@ class PlotFigs():
         # plt.plot(frame_indexes, frame_quality_lists[2][params.TIME_GAP_BETWEEN_NOW_AND_FIRST_FRAME_TO_UPDATE * params.FPS:], linewidth=2, color='green')
         # legend.append('linear (steep) Wj, know BW')
         # plt.legend(legend, fontsize=30, loc='best', ncol=1)
-        plt.grid(linestyle='dashed', axis='y', linewidth=1.5, color='gray')
+        plt.grid(linestyle='dashed', axis='y', linewidth=1, color='gray')
         plt.title('Frame Quality of Longdress, Latency=%ds' %
                   (params.TARGET_LATENCY // params.FPS),
-                  fontsize=40,
+                  fontsize=20,
                   fontweight='bold')
 
-        plt.xlabel('frame idx', fontsize=40, fontweight='bold')
-        plt.ylabel('quality', fontsize=40, fontweight='bold')
+        plt.xlabel('frame idx', fontsize=15, fontweight='bold')
+        plt.ylabel('quality', fontsize=15, fontweight='bold')
 
-        plt.xticks(fontsize=30)
+        plt.xticks(fontsize=15)
         # plt.yticks([0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45], fontsize=30)
-        plt.yticks(fontsize=30)
+        plt.yticks(fontsize=15)
         # plt.tight_layout()
         if params.SAVE_WHEN_PLOTTING:
-            plt.savefig('./ilqr_results/buf' +
-                        str(params.TARGET_LATENCY // params.FPS) +
-                        's/frame_quality.eps')
+            # The final path to save to
+            file_name = 'frame_quality.eps'
+            save_path = os.path.join(self.directory, file_name)
+            plt.savefig(save_path, transparent=True, bbox_inches='tight')
         else:
             plt.show()
 
@@ -70,7 +77,7 @@ class PlotFigs():
         legend = []
         plt.plot(frame_indexes,
                  frame_quality_var_lists[params.BUFFER_LENGTH:],
-                 linewidth=2,
+                 linewidth=1,
                  color='red')
         # legend.append('constant Wj, know BW')
         # plt.plot(frame_indexes, frame_quality_var_lists[1][params.TIME_GAP_BETWEEN_NOW_AND_FIRST_FRAME_TO_UPDATE * params.FPS:], linewidth=2, color='blue')
@@ -78,23 +85,24 @@ class PlotFigs():
         # plt.plot(frame_indexes, frame_quality_var_lists[2][params.TIME_GAP_BETWEEN_NOW_AND_FIRST_FRAME_TO_UPDATE * params.FPS:], linewidth=2, color='green')
         # legend.append('linear (steep) Wj, know BW')
         # plt.legend(legend, fontsize=30, loc='best', ncol=1)
-        plt.grid(linestyle='dashed', axis='y', linewidth=1.5, color='gray')
+        plt.grid(linestyle='dashed', axis='y', linewidth=1, color='gray')
         plt.title('Frame Quality Variance of Longdress, Latency=%ds' %
                   (params.TARGET_LATENCY // params.FPS),
-                  fontsize=40,
+                  fontsize=20,
                   fontweight='bold')
 
-        plt.xlabel('frame idx', fontsize=40, fontweight='bold')
-        plt.ylabel('quality', fontsize=40, fontweight='bold')
+        plt.xlabel('frame idx', fontsize=15, fontweight='bold')
+        plt.ylabel('quality', fontsize=15, fontweight='bold')
 
-        plt.xticks(fontsize=30)
+        plt.xticks(fontsize=15)
         # plt.yticks([0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45], fontsize=30)
-        plt.yticks(fontsize=30)
+        plt.yticks(fontsize=15)
         # plt.tight_layout()
         if params.SAVE_WHEN_PLOTTING:
-            plt.savefig('./ilqr_results/buf' +
-                        str(params.TARGET_LATENCY // params.FPS) +
-                        's/frame_quality_var.eps')
+            # The final path to save to
+            file_name = 'frame_quality_var.eps'
+            save_path = os.path.join(self.directory, file_name)
+            plt.savefig(save_path, transparent=True, bbox_inches='tight')
         else:
             plt.show()
 

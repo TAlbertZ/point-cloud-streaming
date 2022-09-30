@@ -48,7 +48,7 @@ SVC_OVERHEAD = 1
 SMOOTH_MIN_PARAM = 50
 
 FPS = 30
-TARGET_LATENCY = 60  # in frame
+TARGET_LATENCY = 90  # in frame
 ILQR_HORIZON = TARGET_LATENCY // FPS
 
 # Assume frame is independently encoded/decoded
@@ -90,7 +90,7 @@ NUM_TILES_PER_SIDE_IN_A_FRAME = 2**TILE_LEVEL_FROM_ROOT
 
 NUM_FRAMES = 300
 
-VIDEO_LENGTH = 15  # sec
+VIDEO_LENGTH = 60  # sec
 
 # video: H1 user: P01_V1
 # NUM_FRAMES_VIEWED = 549 + BUFFER_LENGTH # watching looply
