@@ -51,7 +51,7 @@ class QRWeights():
             self.num_pts_versions = pk.load(file)
         file.close()
 
-        pdb.set_trace()
+        # pdb.set_trace()
 
     def give_every_tile_valid_weights(self):
         # remove nan value

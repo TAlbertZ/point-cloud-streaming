@@ -82,16 +82,25 @@ class AutoDiffCost():
         self.weighted_quality_sum = 0.0
         self.quality_var = 0.0
         self.tile_utility_coef = params.TILE_UTILITY_COEF
+        self.quality_mat_prev_unupdateable_fr = np.zeros(
+            (params.NUM_TILES_PER_SIDE_IN_A_FRAME,
+             params.NUM_TILES_PER_SIDE_IN_A_FRAME,
+             params.NUM_TILES_PER_SIDE_IN_A_FRAME))
 
-        self.logger = self.set_logger()
+        self.logger = self.set_logger(logger_level=logging.INFO)
+        self.logger_check_cost = logging.getLogger(
+            'buffer_control_ilqr.check_cost')
 
         # regard all runtime warnings as errors, for debug use
         # warnings.simplefilter('error')
 
-    def set_logger(self):
-        logger = logging.getLogger(__name__)
-        logger.propagate = False
-        logger.setLevel(logging.DEBUG)
+    def set_logger(self,
+                   logger_name=__name__,
+                   logger_level=logging.DEBUG,
+                   logger_propagate=False):
+        logger = logging.getLogger(logger_name)
+        logger.propagate = logger_propagate
+        logger.setLevel(logger_level)
         console_handler = logging.StreamHandler()
         formatter = logging.Formatter(
             '%(levelname)s - %(lineno)d - %(module)s\n%(message)s')
@@ -202,8 +211,7 @@ class AutoDiffCost():
             self.updated_tiles_pos = self.viewing_probability[
                 i * params.FPS:i * params.FPS +
                 params.TARGET_LATENCY].nonzero()
-            # self.logger.debug('updated_tiles_pos %s', self.updated_tiles_pos)
-            # self.logger.debug(':start_frame_idx_within_video %s', start_frame_idx_within_video)
+            # self.logger.debug('updated_tiles_pos: %s\nstart_frame_idx_within_video: %d', self.updated_tiles_pos, start_frame_idx_within_video)
 
             update_time_step = self.update_start_idx // params.FPS
             # buffer is not fully occupied yet
@@ -272,7 +280,7 @@ class AutoDiffCost():
             self.frame_weights = np.ones_like(self.tiles_rates_to_be_watched)
         ### TODO by Tongyu: add more frame weight types
 
-        self.theta_of_interest = params.TILE_SIDE_LEN / self.distance_of_interest
+        self.theta_of_interest = params.TILE_SIDE_LEN / self.distance_of_interest * params.RADIAN_TO_DEGREE
         self.num_points = self.a_updated_tiles * self.tiles_rates_to_be_watched + self.b_updated_tiles
         self.num_points_per_degree = self.num_points**0.5 / self.theta_of_interest  # f_ang
         self.quality_tiles = self.get_quality_for_tiles(
@@ -312,21 +320,61 @@ class AutoDiffCost():
         self.order_nonzero_view_prob_of_interest = self.order_nonzero_view_prob_of_interest.astype(
             int)
 
-        tile_of_interest_pos_prev_unupdateable_fr = buffer_[params.FPS -
-                                                            1].nonzero()
-        viewing_probability_prev_unupdateable_fr = np.zeros_like(
-            buffer_[params.FPS - 1])
-        viewing_probability_prev_unupdateable_fr[
-            tile_of_interest_pos_prev_unupdateable_fr] = 1
+        # FIXME [URGENT] by Tongyu: not buffer_ here, should be quality of previous frame
+        # if i==0: recalculate quality matrix of previous frame, elif i>0:refer to self.prev_fr_quality_tiles_in_mat
+        if i == 0:
+            tile_of_interest_pos_prev_unupdateable_fr = buffer_[params.FPS -
+                                                                1].nonzero()
+            viewing_probability_prev_unupdateable_fr = np.zeros_like(
+                buffer_[params.FPS - 1])
+            viewing_probability_prev_unupdateable_fr[
+                tile_of_interest_pos_prev_unupdateable_fr] = 1
 
-        self.mask_overlap_tiles_in_mat[
-            0] = viewing_probability_prev_unupdateable_fr * self.viewing_probability_of_interest[
-                0]
-        self.quality_diff[0] = (
-            buffer_[params.FPS - 1] -
-            self.quality_tiles_in_mat[0]) * self.mask_overlap_tiles_in_mat[0]
-        self.num_overlap_tiles_adjacent_frames[0] = np.count_nonzero(
-            self.quality_diff[0])
+            self.mask_overlap_tiles_in_mat[
+                0] = viewing_probability_prev_unupdateable_fr * self.viewing_probability_of_interest[
+                    0]
+            self.num_overlap_tiles_adjacent_frames[0] = np.count_nonzero(
+                self.mask_overlap_tiles_in_mat[0])
+            # if self.num_overlap_tiles_adjacent_frames[0] != 0:
+
+            #     # calculate tile_quality_mat of previous frame
+            #     distance_of_interest = distances[visible_tiles_pos]
+
+            #     theta_of_interest = params.TILE_SIDE_LEN / distance_of_interest * params.RADIAN_TO_DEGREE
+
+            #     a_tiles_of_interest = self.tile_a[frame_idx_within_video][
+            #         visible_tiles_pos]
+            #     b_tiles_of_interest = self.tile_b[frame_idx_within_video][
+            #         visible_tiles_pos]
+            #     tiles_rates_to_be_watched = tiles_byte_sizes[visible_tiles_pos]
+
+            #     num_points = a_tiles_of_interest * tiles_rates_to_be_watched + b_tiles_of_interest
+            #     num_points_per_degree = num_points**0.5 / theta_of_interest  # f_ang
+            #     quality_tiles = self.cost.get_quality_for_tiles(
+            #         num_points_per_degree, theta_of_interest)  # update quality_tiles
+
+            #     quality_tiles_in_mat = np.zeros_like(tiles_byte_sizes)
+            #     quality_tiles_in_mat[visible_tiles_pos] = quality_tiles
+
+            #     self.quality_diff[0] = (
+            #         buffer_[params.FPS - 1] -
+            #         self.quality_tiles_in_mat[0]) * self.mask_overlap_tiles_in_mat[0]
+        else:
+            tile_of_interest_pos_prev_unupdateable_fr = self.quality_mat_prev_unupdateable_fr.nonzero(
+            )
+            viewing_probability_prev_unupdateable_fr = np.zeros_like(
+                self.quality_mat_prev_unupdateable_fr)
+            viewing_probability_prev_unupdateable_fr[
+                tile_of_interest_pos_prev_unupdateable_fr] = 1
+
+            self.mask_overlap_tiles_in_mat[
+                0] = viewing_probability_prev_unupdateable_fr * self.viewing_probability_of_interest[
+                    0]
+            self.num_overlap_tiles_adjacent_frames[0] = np.count_nonzero(
+                self.mask_overlap_tiles_in_mat[0])
+        self.quality_mat_prev_unupdateable_fr = self.quality_tiles_in_mat[
+            params.FPS - 1].copy()
+
         if self.num_overlap_tiles_adjacent_frames[0] != 0:
             self.quality_var_adjacent_frames[0] = np.sum(
                 self.quality_diff[0]**
@@ -408,7 +456,19 @@ class AutoDiffCost():
         self.sum_u = np.sum(u)
         self.bw_bound_barrier = -np.log(self.bandwidth_budget[i] - self.sum_u)
 
+        # TODO by Tongyu: weights of barrier function should be as small as possible! maybe no need to adjust inner weights of them. e.g., 1e-6 * zero_bound_barrier
+        # if do so, all the derivatives also need to be modified with weights
         self.current_cost = -self.weighted_quality_sum + self.sum_quality_var * params.WEIGHT_VARIANCE + self.zero_bound_barrier + self.upper_bound_barrier + self.lower_bound_barrier + self.bw_bound_barrier
+
+        if not np.isnan(self.current_cost):
+            self.logger_check_cost.debug(
+                'weighted quality sum: %f\nsum quality var: %f\nzero bound barrier: %f\nupper bound barrier: %f\nlower bound barrier: %f\nbw bound barrier: %f',
+                -self.weighted_quality_sum, self.sum_quality_var,
+                self.zero_bound_barrier, self.upper_bound_barrier,
+                self.lower_bound_barrier, self.bw_bound_barrier)
+
+            if self.sum_quality_var > 1e4:
+                pdb.set_trace()
 
         return self.current_cost
 

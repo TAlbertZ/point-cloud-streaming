@@ -32,7 +32,10 @@ def set_loggers():
                         level=logging.INFO)
 
 
+# FIXME by Tongyu: video frames should also be back-forward like fov trace
 # TODO by Tongyu: use HPC for multiple experiments, e.g., set different buf length
+# TODO [URGENT] by Tongyu: find more reasonable and calculation-friendly utility model for frame, tile and segment.
+# TODO [URGENT] by Tongyu: how to calculate frame-level quality variance between adjacent frames? currently is average quality over tiles.
 # TODO by Tongyu: compare total number of points, number of nonempty tiles, and average number of points over these tiles, between two ajacent frames;
 #                   also, find if there exists a shift between two frames.
 def main():

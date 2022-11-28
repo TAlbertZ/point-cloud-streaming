@@ -29,6 +29,9 @@ class FrameWeightType(Enum):
     EXP_DECREASE = 2
     FOV_PRED_ACCURACY = 3  # based on fov overlap ratio between pred and true
 
+SCALABLE_CODING = True
+
+RADIAN_TO_DEGREE = 180 / np.pi
 
 WEIGHT_VARIANCE = 1
 
@@ -48,7 +51,7 @@ SVC_OVERHEAD = 1
 SMOOTH_MIN_PARAM = 50
 
 FPS = 30
-TARGET_LATENCY = 90  # in frame
+TARGET_LATENCY = 30  # in frame
 ILQR_HORIZON = TARGET_LATENCY // FPS
 
 # Assume frame is independently encoded/decoded

@@ -10,8 +10,12 @@ import params
 from params import Algo
 from params import ActionInitType
 from hidden_points_removal import HiddenPointsRemoval
-from dynamics import AutoDiffDynamics
-from cost import AutoDiffCost
+if params.SCALABLE_CODING:
+    from dynamics import AutoDiffDynamics
+    from cost import AutoDiffCost
+else:
+    from dynamics_nonscalable_coding import AutoDiffDynamics
+    from cost_nonscalable_coding  import AutoDiffCost
 
 np.random.seed(7)
 
@@ -31,8 +35,10 @@ class Buffer():
                  max_reg=1e10,
                  hessians=False):
 
-        self.logger = self.set_logger()
-        # self.plain_logger = logging.getLogger('plain_logger')
+        self.logger = self.set_logger(logger_level=logging.DEBUG)
+        self.logger_check_cost = self.set_logger(logger_name=__name__ +
+                                                 '.check_cost',
+                                                 logger_level=logging.INFO)
 
         self.buffer_length = params.BUFFER_LENGTH  # frame
 
@@ -229,10 +235,13 @@ class Buffer():
 
         #########################
 
-    def set_logger(self):
-        logger = logging.getLogger(__name__)
-        logger.propagate = False
-        logger.setLevel(logging.DEBUG)
+    def set_logger(self,
+                   logger_name=__name__,
+                   logger_level=logging.DEBUG,
+                   logger_propagate=False):
+        logger = logging.getLogger(logger_name)
+        logger.propagate = logger_propagate
+        logger.setLevel(logger_level)
         console_handler = logging.StreamHandler()
         formatter = logging.Formatter(
             '%(levelname)s - %(lineno)d - %(module)s\n%(message)s')
@@ -318,7 +327,7 @@ class Buffer():
         total_visible_size = np.sum(tiles_byte_sizes[visible_tiles_pos])
         distance_of_interest = distances[visible_tiles_pos]
 
-        theta_of_interest = params.TILE_SIDE_LEN / distance_of_interest
+        theta_of_interest = params.TILE_SIDE_LEN / distance_of_interest * params.RADIAN_TO_DEGREE
 
         a_tiles_of_interest = self.tile_a[frame_idx_within_video][
             visible_tiles_pos]
@@ -331,11 +340,14 @@ class Buffer():
         quality_tiles = self.cost.get_quality_for_tiles(
             num_points_per_degree, theta_of_interest)  # update quality_tiles
 
+        quality_tiles_in_mat = np.zeros_like(tiles_byte_sizes)
+        quality_tiles_in_mat[visible_tiles_pos] = quality_tiles
+
         frame_quality = np.sum(quality_tiles)
 
         ################# frame_quality_var ##########################
-        mask_prev_pop_frame = np.zeros_like(self.prev_pop_frame)
-        mask_prev_pop_frame[self.prev_pop_frame.nonzero()] = 1
+        mask_prev_pop_frame = np.zeros_like(self.tilesizes_prev_pop_frame)
+        mask_prev_pop_frame[self.tilesizes_prev_pop_frame.nonzero()] = 1
         mask_prev_visible_tiles = mask_prev_pop_frame * self.prev_viewing_probability
 
         mask_overlap_tiles_in_mat = mask_visible_tiles * mask_prev_visible_tiles
@@ -343,11 +355,12 @@ class Buffer():
         num_overlap_tiles = len(overlap_pos[0])
 
         if num_overlap_tiles != 0:
-            quality_diff = tiles_byte_sizes[overlap_pos] - self.prev_pop_frame[
+            quality_diff = quality_tiles_in_mat[overlap_pos] - self.tilequality_prev_pop_frame[
                 overlap_pos]
             frame_quality_var = np.sum(quality_diff**2) / num_overlap_tiles
         else:
             frame_quality_var = 0
+        self.tilequality_prev_pop_frame = quality_tiles_in_mat.copy()
 
         if len(viewing_probability.nonzero()[0]) == 0:
             self.mean_size_over_tiles_per_fov.append(float("inf"))
@@ -440,7 +453,8 @@ class Buffer():
 
             # pop processed frame and store it as previous frame
             # for calculation of quality_var for next frame
-            self.prev_pop_frame = self.buffer[0]
+            self.tilesizes_prev_pop_frame = self.buffer[0]
+            self.tilequality_prev_pop_frame = np.zeros_like(self.tilesizes_prev_pop_frame)
             self.prev_viewing_probability = viewing_probability[0].copy()
             self.buffer.pop(0)
 
@@ -1129,6 +1143,12 @@ class Buffer():
                     i * params.FPS:i * params.FPS +
                     params.TARGET_LATENCY].nonzero()
 
+                # new tiles are from last params.FPS frames in this forward round
+                new_tiles_into_buf_pos = viewing_probability[
+                    (i - 1) * params.FPS +
+                    params.TARGET_LATENCY:i * params.FPS +
+                    params.TARGET_LATENCY]
+
                 # TODO by Tongyu: correct rate_version_start_idx
                 rate_version_start_idx = (
                     update_start_idx + i * params.FPS) % params.BUFFER_LENGTH
@@ -1181,16 +1201,25 @@ class Buffer():
                 # 1e-3 is to avoid reaching upperbound
                 u_upper_bound = max_rates_cur_step[
                     tile_of_interest_pos] - 1e-3 - x
-                u_lower_bound = x - min_rates_cur_step[tile_of_interest_pos]
-                new_tiles_into_buffer = np.where(u_lower_bound <= 0)
-                num_new_tiles_into_buffer = len(new_tiles_into_buffer[0])
-                pos_old_states = np.where(u_lower_bound > 0)
-                u_lower_bound[pos_old_states] = 1e-3
-                u_lower_bound[new_tiles_into_buffer] = min_rates_cur_step[
-                    tile_of_interest_pos][(len(xs[i]) -
-                                           num_new_tiles_into_buffer):] + 1e-3
-                # if i == 9:
-                #     pdb.set_trace()
+
+                num_new_tiles_into_buffer = len(new_tiles_into_buf_pos[0])
+                num_old_tiles_in_buf = len(x) - num_new_tiles_into_buffer
+
+                u_lower_bound = np.zeros_like(x)
+                diff_old_states_with_minrate = min_rates_cur_step[
+                    tile_of_interest_pos][:
+                                          num_old_tiles_in_buf] - x[:
+                                                                    num_old_tiles_in_buf]
+                diff_old_states_with_minrate[
+                    diff_old_states_with_minrate < 0] = 0
+
+                # action lower bound for old tiles in buffer
+                u_lower_bound[:num_old_tiles_in_buf] += (
+                    diff_old_states_with_minrate + 1e-3)
+
+                # action lower bound for new tiles coming into buffer
+                u_lower_bound[num_old_tiles_in_buf:] = min_rates_cur_step[
+                    tile_of_interest_pos][num_old_tiles_in_buf:] + 1e-3
 
                 if params.ACTION_INIT_TYPE == ActionInitType.LOW:
                     us[i] = u_lower_bound.copy()
@@ -1423,6 +1452,9 @@ class Buffer():
         viewing_probability = np.array(viewing_probability)
         tile_of_interest_pos = viewing_probability[:params.
                                                    TARGET_LATENCY].nonzero()
+        new_tiles_into_buf_pos = viewing_probability[(
+            params.TARGET_LATENCY -
+            params.FPS):params.TARGET_LATENCY].nonzero()
         x0 = self.buffered_tiles_sizes[tile_of_interest_pos]
 
         # each tile has a 4 tuple location: (frame_idx, x, y, z)
@@ -1486,18 +1518,29 @@ class Buffer():
 
         ######## initialize action #########
         # TODO by Tongyu: add a function for action initialization
+        # TODO by Tongyu: try another kind of initialization: only last params.FPS frames are initialized as min_rates+1e-3, other tiles are just (1e-3)
 
         # 1e-3 is to avoid reaching upperbound
         u_upper_bound = self.max_rates_cur_step[
             tile_of_interest_pos] - 1e-3 - x0
-        u_lower_bound = x0 - self.min_rates_cur_step[tile_of_interest_pos]
-        new_tiles_into_buffer = np.where(u_lower_bound <= 0)
-        num_new_tiles_into_buffer = len(new_tiles_into_buffer[0])
-        pos_old_states = np.where(u_lower_bound > 0)
-        u_lower_bound[pos_old_states] = 1e-3
-        u_lower_bound[new_tiles_into_buffer] = self.min_rates_cur_step[
-            tile_of_interest_pos][(len(x0) -
-                                   num_new_tiles_into_buffer):] + 1e-3
+
+        num_new_tiles_into_buffer = len(new_tiles_into_buf_pos[0])
+        num_old_tiles_in_buf = len(x0) - num_new_tiles_into_buffer
+
+        u_lower_bound = np.zeros_like(x0)
+        diff_old_states_with_minrate = self.min_rates_cur_step[
+            tile_of_interest_pos][:
+                                  num_old_tiles_in_buf] - x0[:
+                                                             num_old_tiles_in_buf]
+        diff_old_states_with_minrate[diff_old_states_with_minrate < 0] = 0
+
+        # action lower bound for old tiles in buffer
+        u_lower_bound[:num_old_tiles_in_buf] += (diff_old_states_with_minrate +
+                                                 1e-3)
+
+        # action lower bound for new tiles coming into buffer
+        u_lower_bound[num_old_tiles_in_buf:] = self.min_rates_cur_step[
+            tile_of_interest_pos][num_old_tiles_in_buf:] + 1e-3
 
         if params.ACTION_INIT_TYPE == ActionInitType.LOW:
             us[0] = u_lower_bound.copy()
