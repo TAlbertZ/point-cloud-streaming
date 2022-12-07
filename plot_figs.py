@@ -70,6 +70,7 @@ class PlotFigs():
             plt.savefig(save_path, transparent=True, bbox_inches='tight')
         else:
             plt.show()
+        plt.close()
 
     def plot_frame_quality_var_trace(self, frame_quality_var_lists):
         frame_indexes = range(
@@ -105,6 +106,7 @@ class PlotFigs():
             plt.savefig(save_path, transparent=True, bbox_inches='tight')
         else:
             plt.show()
+        plt.close()
 
     def plot_mean_tile_quality_per_frame_trace(self, frame_quality_lists,
                                                num_valid_tiles_per_frame):

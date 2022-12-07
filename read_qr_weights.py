@@ -88,7 +88,7 @@ class QRWeights():
         # 	print("max:", np.max(self.rate_versions[rate_version_idx][self.rate_versions[rate_version_idx].nonzero()]))
         # 	self.rate_versions[rate_version_idx][np.where(self.rate_versions[rate_version_idx]==0)] = mean_rate_versions[rate_version_idx]
         nonzero_pos = self.qr_weights["a"].nonzero()
-        self.min_rates[nonzero_pos] = -self.qr_weights["b"][
-            nonzero_pos] / self.qr_weights["a"][nonzero_pos]
-        self.min_rates[self.min_rates < 0] = 0
-        self.min_rates[nonzero_pos] += 1e-3
+        # self.min_rates[nonzero_pos] = -self.qr_weights["b"][
+        #     nonzero_pos] / self.qr_weights["a"][nonzero_pos]
+        # self.min_rates[self.min_rates < 0] = 0
+        # self.min_rates[nonzero_pos] += 1e-3

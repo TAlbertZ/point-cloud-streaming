@@ -15,6 +15,7 @@
 """Dynamics model."""
 
 import logging
+import pdb
 import numpy as np
 from scipy.optimize import approx_fprime
 

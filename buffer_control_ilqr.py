@@ -15,7 +15,7 @@ if params.SCALABLE_CODING:
     from cost import AutoDiffCost
 else:
     from dynamics_nonscalable_coding import AutoDiffDynamics
-    from cost_nonscalable_coding  import AutoDiffCost
+    from cost_nonscalable_coding import AutoDiffCost
 
 np.random.seed(7)
 
@@ -51,7 +51,10 @@ class Buffer():
 
         self.max_tile_sizes = qr_weights_obj.rate_versions[0]  # 300x16x16x16
 
-        self.min_tile_sizes = qr_weights_obj.rate_versions[2]  # 300x16x16x16
+        # self.min_tile_sizes = qr_weights_obj.rate_versions[2]  # 300x16x16x16
+        self.min_tile_sizes = np.zeros_like(
+            qr_weights_obj.rate_versions[params.NUM_RATE_VERSIONS -
+                                         1])  # 300x16x16x16
 
         self.fov_traces_obj = fov_traces_obj
         self.valid_tiles_obj = valid_tiles_obj
@@ -335,10 +338,12 @@ class Buffer():
             visible_tiles_pos]
         tiles_rates_to_be_watched = tiles_byte_sizes[visible_tiles_pos]
 
-        num_points = a_tiles_of_interest * tiles_rates_to_be_watched + b_tiles_of_interest
-        num_points_per_degree = num_points**0.5 / theta_of_interest  # f_ang
+        # num_points = a_tiles_of_interest * tiles_rates_to_be_watched + b_tiles_of_interest
+        # num_points_per_degree = num_points**0.5 / theta_of_interest  # f_ang
+        lod = a_tiles_of_interest * np.log(b_tiles_of_interest * tiles_rates_to_be_watched + 1)
+        num_points_per_degree = 2**lod / theta_of_interest
         quality_tiles = self.cost.get_quality_for_tiles(
-            num_points_per_degree, theta_of_interest)  # update quality_tiles
+            num_points_per_degree)  # update quality_tiles
 
         quality_tiles_in_mat = np.zeros_like(tiles_byte_sizes)
         quality_tiles_in_mat[visible_tiles_pos] = quality_tiles
@@ -355,8 +360,8 @@ class Buffer():
         num_overlap_tiles = len(overlap_pos[0])
 
         if num_overlap_tiles != 0:
-            quality_diff = quality_tiles_in_mat[overlap_pos] - self.tilequality_prev_pop_frame[
-                overlap_pos]
+            quality_diff = quality_tiles_in_mat[
+                overlap_pos] - self.tilequality_prev_pop_frame[overlap_pos]
             frame_quality_var = np.sum(quality_diff**2) / num_overlap_tiles
         else:
             frame_quality_var = 0
@@ -454,7 +459,8 @@ class Buffer():
             # pop processed frame and store it as previous frame
             # for calculation of quality_var for next frame
             self.tilesizes_prev_pop_frame = self.buffer[0]
-            self.tilequality_prev_pop_frame = np.zeros_like(self.tilesizes_prev_pop_frame)
+            self.tilequality_prev_pop_frame = np.zeros_like(
+                self.tilesizes_prev_pop_frame)
             self.prev_viewing_probability = viewing_probability[0].copy()
             self.buffer.pop(0)
 
@@ -599,7 +605,11 @@ class Buffer():
         true_bandwidth_budget = self.bw_traces_obj.bw_trace[
             self.current_bandwidth_idx + 1] * params.SCALE_BW  # Mbps
         success_download_rate = 1
-        consumed_bandwidth = sum_solution_rate - sum_r0
+        if params.SCALABLE_CODING:
+            consumed_bandwidth = sum_solution_rate - sum_r0
+        else:
+            consumed_bandwidth = sum_solution_rate
+
         if params.USING_RUMA and params.RUMA_SCALABLE_CODING == False:
             locs = np.where(tiles_rate_solution > buffered_tiles_sizes)
             # pdb.set_trace()
@@ -1134,6 +1144,7 @@ class Buffer():
         for i in range(N):
             logging.info('%dth time step of iLQR forward rollout', i)
             x = xs[i]
+            # pdb.set_trace()
 
             # state/action sizes are different in every iteration
             # if us[i] is 0.0 (float), it needs initialization
@@ -1154,83 +1165,89 @@ class Buffer():
                     update_start_idx + i * params.FPS) % params.BUFFER_LENGTH
 
                 update_time_step = update_start_idx // params.FPS
-                # buffer is not fully occupied yet
-                if update_time_step + i < params.TARGET_LATENCY // params.FPS:
-                    max_rates_cur_step = np.concatenate(
-                        (np.zeros(
-                            (params.TARGET_LATENCY - rate_version_start_idx,
-                             params.NUM_TILES_PER_SIDE_IN_A_FRAME,
-                             params.NUM_TILES_PER_SIDE_IN_A_FRAME,
-                             params.NUM_TILES_PER_SIDE_IN_A_FRAME)),
-                         self.max_tile_sizes[:rate_version_start_idx]),
-                        axis=0)
-                    min_rates_cur_step = np.concatenate(
-                        (np.zeros(
-                            (params.TARGET_LATENCY - rate_version_start_idx,
-                             params.NUM_TILES_PER_SIDE_IN_A_FRAME,
-                             params.NUM_TILES_PER_SIDE_IN_A_FRAME,
-                             params.NUM_TILES_PER_SIDE_IN_A_FRAME)),
-                         self.min_rates[:rate_version_start_idx]),
-                        axis=0)
 
-                else:
-                    # looks wierd here, that's because the video is played repeatedly, so
-                    # every 1s the 'self.max_tile_sizes' and 'self.min_rates' should be circularly shifted!
-                    max_rates_cur_step = np.concatenate(
-                        (self.max_tile_sizes[
-                            (update_start_idx + i * params.FPS -
-                             params.TARGET_LATENCY) % params.NUM_FRAMES:],
-                         self.max_tile_sizes[:(update_start_idx +
-                                               i * params.FPS -
-                                               params.TARGET_LATENCY) %
-                                             params.NUM_FRAMES]),
-                        axis=0)
+                # # buffer is not fully occupied yet
+                # if update_time_step + i < params.TARGET_LATENCY // params.FPS:
+                #     max_rates_cur_step = np.concatenate(
+                #         (np.zeros(
+                #             (params.TARGET_LATENCY - rate_version_start_idx,
+                #              params.NUM_TILES_PER_SIDE_IN_A_FRAME,
+                #              params.NUM_TILES_PER_SIDE_IN_A_FRAME,
+                #              params.NUM_TILES_PER_SIDE_IN_A_FRAME)),
+                #          self.max_tile_sizes[:rate_version_start_idx]),
+                #         axis=0)
+                #     min_rates_cur_step = np.concatenate(
+                #         (np.zeros(
+                #             (params.TARGET_LATENCY - rate_version_start_idx,
+                #              params.NUM_TILES_PER_SIDE_IN_A_FRAME,
+                #              params.NUM_TILES_PER_SIDE_IN_A_FRAME,
+                #              params.NUM_TILES_PER_SIDE_IN_A_FRAME)),
+                #          self.min_rates[:rate_version_start_idx]),
+                #         axis=0)
 
-                    min_rates_cur_step = np.concatenate(
-                        (self.min_rates[(update_start_idx + i * params.FPS -
-                                         params.TARGET_LATENCY) %
-                                        params.NUM_FRAMES:],
-                         self.min_rates[:(update_start_idx + i * params.FPS -
-                                          params.TARGET_LATENCY) %
-                                        params.NUM_FRAMES]),
-                        axis=0)
+                # else:
+                #     # looks wierd here, that's because the video is played repeatedly, so
+                #     # every 1s the 'self.max_tile_sizes' and 'self.min_rates' should be circularly shifted!
+                #     max_rates_cur_step = np.concatenate(
+                #         (self.max_tile_sizes[
+                #             (update_start_idx + i * params.FPS -
+                #              params.TARGET_LATENCY) % params.NUM_FRAMES:],
+                #          self.max_tile_sizes[:(update_start_idx +
+                #                                i * params.FPS -
+                #                                params.TARGET_LATENCY) %
+                #                              params.NUM_FRAMES]),
+                #         axis=0)
+
+                #     min_rates_cur_step = np.concatenate(
+                #         (self.min_rates[(update_start_idx + i * params.FPS -
+                #                          params.TARGET_LATENCY) %
+                #                         params.NUM_FRAMES:],
+                #          self.min_rates[:(update_start_idx + i * params.FPS -
+                #                           params.TARGET_LATENCY) %
+                #                         params.NUM_FRAMES]),
+                #         axis=0)
 
                 ######## initialize action #########
                 # TODO by Tongyu: add a function for action initialization
 
-                # 1e-3 is to avoid reaching upperbound
-                u_upper_bound = max_rates_cur_step[
-                    tile_of_interest_pos] - 1e-3 - x
+                # # 1e-3 is to avoid reaching upperbound
+                # u_upper_bound = max_rates_cur_step[
+                #     tile_of_interest_pos] - 1e-3 - x
 
-                num_new_tiles_into_buffer = len(new_tiles_into_buf_pos[0])
-                num_old_tiles_in_buf = len(x) - num_new_tiles_into_buffer
+                # num_new_tiles_into_buffer = len(new_tiles_into_buf_pos[0])
+                # num_old_tiles_in_buf = len(x) - num_new_tiles_into_buffer
 
-                u_lower_bound = np.zeros_like(x)
-                diff_old_states_with_minrate = min_rates_cur_step[
-                    tile_of_interest_pos][:
-                                          num_old_tiles_in_buf] - x[:
-                                                                    num_old_tiles_in_buf]
-                diff_old_states_with_minrate[
-                    diff_old_states_with_minrate < 0] = 0
+                # u_lower_bound = np.zeros_like(x)
+                # diff_old_states_with_minrate = min_rates_cur_step[
+                #     tile_of_interest_pos][:
+                #                           num_old_tiles_in_buf] - x[:
+                #                                                     num_old_tiles_in_buf]
+                # diff_old_states_with_minrate[
+                #     diff_old_states_with_minrate < 0] = 0
 
-                # action lower bound for old tiles in buffer
-                u_lower_bound[:num_old_tiles_in_buf] += (
-                    diff_old_states_with_minrate + 1e-3)
+                # # action lower bound for old tiles in buffer
+                # u_lower_bound[:num_old_tiles_in_buf] += (
+                #     diff_old_states_with_minrate + 1e-3)
+                # if params.SCALABLE_CODING == False:
+                #     u_lower_bound[:num_old_tiles_in_buf] = min_rates_cur_step[
+                #     tile_of_interest_pos][:num_old_tiles_in_buf] + 1e-3
 
-                # action lower bound for new tiles coming into buffer
-                u_lower_bound[num_old_tiles_in_buf:] = min_rates_cur_step[
-                    tile_of_interest_pos][num_old_tiles_in_buf:] + 1e-3
+                # # action lower bound for new tiles coming into buffer
+                # u_lower_bound[num_old_tiles_in_buf:] = min_rates_cur_step[
+                #     tile_of_interest_pos][num_old_tiles_in_buf:] + 1e-3
 
-                if params.ACTION_INIT_TYPE == ActionInitType.LOW:
-                    us[i] = u_lower_bound.copy()
-                elif params.ACTION_INIT_TYPE == ActionInitType.RANDOM_UNIFORM:
-                    us[i] = np.random.uniform(u_lower_bound, u_upper_bound,
-                                              (len(xs[i]), ))
-                else:
-                    pass
+                # if params.ACTION_INIT_TYPE == ActionInitType.LOW:
+                #     us[i] = u_lower_bound.copy()
+                # elif params.ACTION_INIT_TYPE == ActionInitType.RANDOM_UNIFORM:
+                #     us[i] = np.random.uniform(u_lower_bound, u_upper_bound,
+                #                               (len(xs[i]), ))
+                # else:
+                #     pass
                 ######################################
+                # us[i] = np.random.uniform(0.1, 1, (len(xs[i]), ))
+                us[i] = np.full(len(xs[i], ), 1e-3)
+
             u = us[i]
-            # pdb.set_trace()
 
             start_time = time.time()
             xs[i + 1] = self.dynamics.f(x, u, i, viewing_probability)
@@ -1478,40 +1495,40 @@ class Buffer():
         update_time_step = update_start_idx // params.FPS
 
         # buffer is not fully occupied yet
-        if update_time_step < params.TARGET_LATENCY // params.FPS:
-            self.max_rates_cur_step = np.concatenate(
-                (np.zeros((params.TARGET_LATENCY - update_start_idx,
-                           params.NUM_TILES_PER_SIDE_IN_A_FRAME,
-                           params.NUM_TILES_PER_SIDE_IN_A_FRAME,
-                           params.NUM_TILES_PER_SIDE_IN_A_FRAME)),
-                 self.max_tile_sizes[:update_start_idx]),
-                axis=0)
-            self.min_rates_cur_step = np.concatenate(
-                (np.zeros((params.TARGET_LATENCY - update_start_idx,
-                           params.NUM_TILES_PER_SIDE_IN_A_FRAME,
-                           params.NUM_TILES_PER_SIDE_IN_A_FRAME,
-                           params.NUM_TILES_PER_SIDE_IN_A_FRAME)),
-                 self.min_rates[:update_start_idx]),
-                axis=0)
+        # if update_time_step < params.TARGET_LATENCY // params.FPS:
+        #     self.max_rates_cur_step = np.concatenate(
+        #         (np.zeros((params.TARGET_LATENCY - update_start_idx,
+        #                    params.NUM_TILES_PER_SIDE_IN_A_FRAME,
+        #                    params.NUM_TILES_PER_SIDE_IN_A_FRAME,
+        #                    params.NUM_TILES_PER_SIDE_IN_A_FRAME)),
+        #          self.max_tile_sizes[:update_start_idx]),
+        #         axis=0)
+        #     self.min_rates_cur_step = np.concatenate(
+        #         (np.zeros((params.TARGET_LATENCY - update_start_idx,
+        #                    params.NUM_TILES_PER_SIDE_IN_A_FRAME,
+        #                    params.NUM_TILES_PER_SIDE_IN_A_FRAME,
+        #                    params.NUM_TILES_PER_SIDE_IN_A_FRAME)),
+        #          self.min_rates[:update_start_idx]),
+        #         axis=0)
 
-        else:
-            # looks wierd here, that's because the video is played repeatedly, so
-            # every 1s the 'self.max_tile_sizes' and 'self.min_rates' should be circularly shifted!
-            self.max_rates_cur_step = np.concatenate(
-                (self.max_tile_sizes[(update_start_idx -
-                                      params.TARGET_LATENCY) %
-                                     params.NUM_FRAMES:],
-                 self.max_tile_sizes[:(update_start_idx -
-                                       params.TARGET_LATENCY) %
-                                     params.NUM_FRAMES]),
-                axis=0)
+        # else:
+        #     # looks wierd here, that's because the video is played repeatedly, so
+        #     # every 1s the 'self.max_tile_sizes' and 'self.min_rates' should be circularly shifted!
+        #     self.max_rates_cur_step = np.concatenate(
+        #         (self.max_tile_sizes[(update_start_idx -
+        #                               params.TARGET_LATENCY) %
+        #                              params.NUM_FRAMES:],
+        #          self.max_tile_sizes[:(update_start_idx -
+        #                                params.TARGET_LATENCY) %
+        #                              params.NUM_FRAMES]),
+        #         axis=0)
 
-            self.min_rates_cur_step = np.concatenate(
-                (self.min_rates[(update_start_idx - params.TARGET_LATENCY) %
-                                params.NUM_FRAMES:],
-                 self.min_rates[:(update_start_idx - params.TARGET_LATENCY) %
-                                params.NUM_FRAMES]),
-                axis=0)
+        #     self.min_rates_cur_step = np.concatenate(
+        #         (self.min_rates[(update_start_idx - params.TARGET_LATENCY) %
+        #                         params.NUM_FRAMES:],
+        #          self.min_rates[:(update_start_idx - params.TARGET_LATENCY) %
+        #                         params.NUM_FRAMES]),
+        #         axis=0)
 
         # us = np.random.uniform(0.1, 1, (self.n_step, action_size)) # initialize actions
         us = [0.0] * self.N
@@ -1520,35 +1537,42 @@ class Buffer():
         # TODO by Tongyu: add a function for action initialization
         # TODO by Tongyu: try another kind of initialization: only last params.FPS frames are initialized as min_rates+1e-3, other tiles are just (1e-3)
 
-        # 1e-3 is to avoid reaching upperbound
-        u_upper_bound = self.max_rates_cur_step[
-            tile_of_interest_pos] - 1e-3 - x0
+        # # 1e-3 is to avoid reaching upperbound
+        # u_upper_bound = self.max_rates_cur_step[
+        #     tile_of_interest_pos] - 1e-3 - x0
 
-        num_new_tiles_into_buffer = len(new_tiles_into_buf_pos[0])
-        num_old_tiles_in_buf = len(x0) - num_new_tiles_into_buffer
+        # num_new_tiles_into_buffer = len(new_tiles_into_buf_pos[0])
+        # num_old_tiles_in_buf = len(x0) - num_new_tiles_into_buffer
 
-        u_lower_bound = np.zeros_like(x0)
-        diff_old_states_with_minrate = self.min_rates_cur_step[
-            tile_of_interest_pos][:
-                                  num_old_tiles_in_buf] - x0[:
-                                                             num_old_tiles_in_buf]
-        diff_old_states_with_minrate[diff_old_states_with_minrate < 0] = 0
+        # u_lower_bound = np.zeros_like(x0)
+        # diff_old_states_with_minrate = self.min_rates_cur_step[
+        #     tile_of_interest_pos][:
+        #                           num_old_tiles_in_buf] - x0[:
+        #                                                      num_old_tiles_in_buf]
+        # diff_old_states_with_minrate[diff_old_states_with_minrate < 0] = 0
 
-        # action lower bound for old tiles in buffer
-        u_lower_bound[:num_old_tiles_in_buf] += (diff_old_states_with_minrate +
-                                                 1e-3)
+        # # action lower bound for old tiles in buffer
+        # u_lower_bound[:num_old_tiles_in_buf] += (diff_old_states_with_minrate +
+        #                                          1e-3)
+        # if params.SCALABLE_CODING == False:
+        #     u_lower_bound[:num_old_tiles_in_buf] = self.min_rates_cur_step[
+        #             tile_of_interest_pos][:num_old_tiles_in_buf] + 1e-3
 
-        # action lower bound for new tiles coming into buffer
-        u_lower_bound[num_old_tiles_in_buf:] = self.min_rates_cur_step[
-            tile_of_interest_pos][num_old_tiles_in_buf:] + 1e-3
+        # # action lower bound for new tiles coming into buffer
+        # u_lower_bound[num_old_tiles_in_buf:] = self.min_rates_cur_step[
+        #     tile_of_interest_pos][num_old_tiles_in_buf:] + 1e-3
 
-        if params.ACTION_INIT_TYPE == ActionInitType.LOW:
-            us[0] = u_lower_bound.copy()
-        elif params.ACTION_INIT_TYPE == ActionInitType.RANDOM_UNIFORM:
-            us[0] = np.random.uniform(u_lower_bound, u_upper_bound,
-                                      (action_size, ))
-        else:
-            pass
+        # if params.ACTION_INIT_TYPE == ActionInitType.LOW:
+        #     us[0] = u_lower_bound.copy()
+        # elif params.ACTION_INIT_TYPE == ActionInitType.RANDOM_UNIFORM:
+        #     us[0] = np.random.uniform(u_lower_bound, u_upper_bound,
+        #                               (action_size, ))
+        # else:
+        #     pass
+
+        # us[0] = np.random.uniform(0.1, 1,
+        #                           (action_size, ))  # initialize actions
+        us[0] = np.full((action_size, ), 1e-3)
         ######################################
 
         # pdb.set_trace()
@@ -1674,7 +1698,11 @@ class Buffer():
 
         # tiles_rate_solution is not delta_rates, it the updated rates!!
         tiles_rate_solution = self.buffered_tiles_sizes.copy()
-        tiles_rate_solution[tile_of_interest_pos] += us[0]
+        if params.SCALABLE_CODING:
+            tiles_rate_solution[tile_of_interest_pos] += us[0]
+        else:
+            tiles_rate_solution[tile_of_interest_pos] = us[0]
+
         total_size = np.sum(tiles_rate_solution)
         return tiles_rate_solution, self.buffered_tiles_sizes, total_size, np.sum(
             self.buffered_tiles_sizes)

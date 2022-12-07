@@ -33,7 +33,7 @@ SCALABLE_CODING = True
 
 RADIAN_TO_DEGREE = 180 / np.pi
 
-WEIGHT_VARIANCE = 1
+WEIGHT_VARIANCE = 0
 
 NUM_LQR_ITERATIONS = 10
 
@@ -51,7 +51,7 @@ SVC_OVERHEAD = 1
 SMOOTH_MIN_PARAM = 50
 
 FPS = 30
-TARGET_LATENCY = 30  # in frame
+TARGET_LATENCY = 60  # in frame
 ILQR_HORIZON = TARGET_LATENCY // FPS
 
 # Assume frame is independently encoded/decoded
@@ -105,7 +105,7 @@ VIDEO_NAME = 'longdress'
 VALID_TILES_PATH = '../valid_tiles/' + VIDEO_NAME
 
 # only have longdress data
-VALID_TILES_PATH_FROM_NUM_PTS = '../psnr_weights/num_pts_versions_3x300x16x16x16.pkl'
+VALID_TILES_PATH_FROM_NUM_PTS = '../psnr_weights/results_map_tileRate_to_lod/rate_versions_6x300x16x16x16.pkl'
 
 if VIDEO_NAME == 'longdress':
     fov_traces_file = 'H1_nav.csv'
@@ -134,10 +134,10 @@ TILE_SIDE_LEN = OBJECT_SIDE_LEN / NUM_TILES_PER_SIDE_IN_A_FRAME  # meter
 
 FOV_DEGREE_SPAN = np.pi / 2  # 90 degrees, a circle fov
 
-QR_WEIGHTS_PATH_A = '../psnr_weights/new_a_300x16x16x16.pkl'
-QR_WEIGHTS_PATH_B = '../psnr_weights/new_b_300x16x16x16.pkl'
-PATH_RATE_VERSIONS = '../psnr_weights/rate_versions_3x300x16x16x16.pkl'
-PATH_NUM_PTS_VERSIONS = '../psnr_weights/num_pts_versions_3x300x16x16x16.pkl'
+QR_WEIGHTS_PATH_A = '../psnr_weights/results_map_tileRate_to_lod/new_a_300x16x16x16.pkl'
+QR_WEIGHTS_PATH_B = '../psnr_weights/results_map_tileRate_to_lod/new_b_300x16x16x16.pkl'
+PATH_RATE_VERSIONS = '../psnr_weights/results_map_tileRate_to_lod/rate_versions_6x300x16x16x16.pkl'
+PATH_NUM_PTS_VERSIONS = '../psnr_weights/results_map_tileRate_to_lod/num_pts_versions_6x300x16x16x16.pkl'
 
 BANDWIDTH_ORACLE_KNOWN = True
 if MMSYS_HYBRID_TILING:
@@ -185,4 +185,6 @@ MAP_SIZE_TO_VERSION = {
     BYTE_SIZES[2]: 3
 }
 
-NUM_RATE_VERSIONS = 3
+NUM_RATE_VERSIONS = 6
+BARRIER_WEIGHT = 1e-9
+QUALITY_SUM_WEIGHT = 500
