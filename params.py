@@ -43,7 +43,7 @@ TILE_UTILITY_COEF = np.array(
 
 FRAME_WEIGHT_TYPE = FrameWeightType.CONST
 
-ALGO = Algo.ILQR
+ALGO = Algo.KKT
 ACTION_INIT_TYPE = ActionInitType.LOW
 
 SVC_OVERHEAD = 1
@@ -51,7 +51,9 @@ SVC_OVERHEAD = 1
 SMOOTH_MIN_PARAM = 50
 
 FPS = 30
-TARGET_LATENCY = 60  # in frame
+
+# FIXME currently if latency larger than 300 will have problem
+TARGET_LATENCY = 300  # in frame
 ILQR_HORIZON = TARGET_LATENCY // FPS
 
 # Assume frame is independently encoded/decoded
@@ -170,7 +172,7 @@ QUANTIZE_TILE_SIZE = False
 
 ROUND_TILE_SIZE = False
 
-SCALE_BW = 10  # know bw oracle, otherwise not correct
+SCALE_BW = 1  # know bw oracle, otherwise not correct
 
 MAP_VERSION_TO_SIZE = {
     0: 0,

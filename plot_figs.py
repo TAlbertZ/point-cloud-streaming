@@ -12,8 +12,12 @@ np.random.seed(7)
 class PlotFigs():
 
     def __init__(self):
-        self.directory = './ilqr_results/buf' + str(
-            params.TARGET_LATENCY // params.FPS) + 's'
+        if params.ALGO == params.Algo.ILQR:
+            self.directory = './ilqr_results/buf' + str(
+                params.TARGET_LATENCY // params.FPS) + 's'
+        elif params.ALGO == params.Algo.KKT:
+            self.directory = './kkt_results/buf' + str(
+                params.TARGET_LATENCY // params.FPS) + 's'
 
         # If the directory does not exist, create it
         if not os.path.exists(self.directory):
@@ -61,11 +65,11 @@ class PlotFigs():
 
         plt.xticks(fontsize=15)
         # plt.yticks([0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45], fontsize=30)
-        plt.yticks(fontsize=15)
+        plt.yticks(range(0, 220, 20), fontsize=15)
         # plt.tight_layout()
         if params.SAVE_WHEN_PLOTTING:
             # The final path to save to
-            file_name = 'frame_quality.eps'
+            file_name = 'frame_quality_bw' + str(params.SCALE_BW) + '.eps'
             save_path = os.path.join(self.directory, file_name)
             plt.savefig(save_path, transparent=True, bbox_inches='tight')
         else:
@@ -93,15 +97,15 @@ class PlotFigs():
                   fontweight='bold')
 
         plt.xlabel('frame idx', fontsize=15, fontweight='bold')
-        plt.ylabel('quality', fontsize=15, fontweight='bold')
+        plt.ylabel('quality variance', fontsize=15, fontweight='bold')
 
         plt.xticks(fontsize=15)
         # plt.yticks([0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45], fontsize=30)
-        plt.yticks(fontsize=15)
+        plt.yticks(range(0, 14, 2), fontsize=15)
         # plt.tight_layout()
         if params.SAVE_WHEN_PLOTTING:
             # The final path to save to
-            file_name = 'frame_quality_var.eps'
+            file_name = 'frame_quality_var_bw' + str(params.SCALE_BW) + '.eps'
             save_path = os.path.join(self.directory, file_name)
             plt.savefig(save_path, transparent=True, bbox_inches='tight')
         else:

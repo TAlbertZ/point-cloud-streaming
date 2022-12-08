@@ -49,7 +49,7 @@ def main():
     # pdb.set_trace()
 
     fov_traces_obj = FovTraces()
-    num_frames_load_from_fov_trace = params.NUM_FRAMES_VIEWED
+    num_frames_load_from_fov_trace = params.NUM_FRAMES_VIEWED + params.TARGET_LATENCY
     if params.ALGO == params.Algo.ILQR:
         num_frames_load_from_fov_trace = params.NUM_FRAMES_VIEWED + (
             params.ILQR_HORIZON - 1) * params.FPS
@@ -91,7 +91,7 @@ def main():
                         qr_weights_obj,
                         N=params.ILQR_HORIZON)
     buffer_obj.initialize_buffer()
-    for update_time_step in range(params.NUM_UPDATES):
+    for update_time_step in range(params.NUM_UPDATES + params.TARGET_LATENCY // params.FPS):
         logging.info(
             '\n######################## %dth update step #######################',
             update_time_step + 1)

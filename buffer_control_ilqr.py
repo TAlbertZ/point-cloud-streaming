@@ -340,7 +340,8 @@ class Buffer():
 
         # num_points = a_tiles_of_interest * tiles_rates_to_be_watched + b_tiles_of_interest
         # num_points_per_degree = num_points**0.5 / theta_of_interest  # f_ang
-        lod = a_tiles_of_interest * np.log(b_tiles_of_interest * tiles_rates_to_be_watched + 1)
+        lod = a_tiles_of_interest * np.log(b_tiles_of_interest *
+                                           tiles_rates_to_be_watched + 1)
         num_points_per_degree = 2**lod / theta_of_interest
         quality_tiles = self.cost.get_quality_for_tiles(
             num_points_per_degree)  # update quality_tiles
@@ -690,16 +691,25 @@ class Buffer():
         '''
         z_weights = []
 
-        if evaluation_flag:
-            z_weights.append(
-                np.zeros((params.NUM_TILES_PER_SIDE_IN_A_FRAME,
-                          params.NUM_TILES_PER_SIDE_IN_A_FRAME,
-                          params.NUM_TILES_PER_SIDE_IN_A_FRAME)))
-            valid_locs = viewing_probability[frame_idx -
-                                             update_start_idx].nonzero()
-            z_weights[frame_idx - update_start_idx][valid_locs] = viewing_probability[frame_idx - update_start_idx][valid_locs] \
-                          * params.TILE_SIDE_LEN / 2 / distances[frame_idx - update_start_idx][valid_locs] * 180 / np.pi
-            return z_weights
+        a_updated_tiles = np.concatenate(
+            (self.tile_a[(update_start_idx - params.TARGET_LATENCY) %
+                         params.NUM_FRAMES:],
+             self.tile_a[:(update_start_idx - params.TARGET_LATENCY) %
+                         params.NUM_FRAMES]),
+            axis=0)
+
+        # if evaluation_flag:
+        #     z_weights.append(
+        #         np.zeros((params.NUM_TILES_PER_SIDE_IN_A_FRAME,
+        #                   params.NUM_TILES_PER_SIDE_IN_A_FRAME,
+        #                   params.NUM_TILES_PER_SIDE_IN_A_FRAME)))
+        #     valid_locs = viewing_probability[frame_idx -
+        #                                      update_start_idx].nonzero()
+        #     # z_weights[frame_idx - update_start_idx][valid_locs] = viewing_probability[frame_idx - update_start_idx][valid_locs] \
+        #     #               * params.TILE_SIDE_LEN / 2 / distances[frame_idx - update_start_idx][valid_locs] * 180 / np.pi
+        #     z_weights[frame_idx - update_start_idx][valid_locs] = viewing_probability[frame_idx - update_start_idx][valid_locs] \
+        #                   * params.TILE_SIDE_LEN / 2 / distances[frame_idx - update_start_idx][valid_locs] * 180 / np.pi
+        #     return z_weights
 
         # frame weight is linear wrt. frame_idx: w_j = a * frame_idx + b
         frame_weight_decrease_speed = 0
@@ -708,17 +718,17 @@ class Buffer():
         frame_weight = 1
 
         for frame_idx in range(update_start_idx, update_end_idx + 1):
-            if params.FRAME_WEIGHT_TYPE == 1:
+            if params.FRAME_WEIGHT_TYPE == params.FrameWeightType.LINEAR_DECREASE:
                 # maximal frame_weight = 1, minimal frame_weight is 0.1
                 frame_weight = frame_weight_decrease_speed * (
                     frame_idx - update_start_idx) + 1
-            elif params.FRAME_WEIGHT_TYPE == 0:
+            elif params.FRAME_WEIGHT_TYPE == params.FrameWeightType.CONST:
                 frame_weight = 1
-            elif params.FRAME_WEIGHT_TYPE == 2:
-                frame_weight = -(10 - 0.1) / (
-                    update_end_idx -
-                    update_start_idx) * (frame_idx - update_start_idx) + 10
-            elif params.FRAME_WEIGHT_TYPE == 3:  # based on fov prediction accuracy: overlap ratio
+            # elif params.FRAME_WEIGHT_TYPE == 2:
+            #     frame_weight = -(10 - 0.1) / (
+            #         update_end_idx -
+            #         update_start_idx) * (frame_idx - update_start_idx) + 10
+            elif params.FRAME_WEIGHT_TYPE == params.FrameWeightType.FOV_PRED_ACCURACY:  # based on fov prediction accuracy: overlap ratio
                 frame_weight = np.mean(
                     self.overlap_ratio_history[frame_idx - update_start_idx])
             else:
@@ -743,7 +753,7 @@ class Buffer():
             valid_locs = viewing_probability[frame_idx -
                                              update_start_idx].nonzero()
             z_weights[frame_idx - update_start_idx][valid_locs] = frame_weight * viewing_probability[frame_idx - update_start_idx][valid_locs] \
-                          * params.TILE_SIDE_LEN / 2 / distances[frame_idx - update_start_idx][valid_locs] * 180 / np.pi
+                          * a_updated_tiles[frame_idx - update_start_idx][valid_locs] * np.log(2)
 
             # for x in range(params.NUM_TILES_PER_SIDE_IN_A_FRAME):
             # 	for y in range(params.NUM_TILES_PER_SIDE_IN_A_FRAME):
@@ -2065,6 +2075,20 @@ class Buffer():
         num_frames_to_update = update_end_idx - update_start_idx + 1
         # pdb.set_trace()
 
+        b_updated_tiles = np.concatenate(
+            (self.tile_b[(update_start_idx - params.TARGET_LATENCY) %
+                         params.NUM_FRAMES:],
+             self.tile_b[:(update_start_idx - params.TARGET_LATENCY) %
+                         params.NUM_FRAMES]),
+            axis=0)
+
+        max_rates_cur_step = np.concatenate(
+            (self.max_tile_sizes[(update_start_idx - params.TARGET_LATENCY) %
+                                 params.NUM_FRAMES:],
+             self.max_tile_sizes[:(update_start_idx - params.TARGET_LATENCY) %
+                                 params.NUM_FRAMES]),
+            axis=0)
+
         # tiles' byte size that are already in buffer
         buffered_tiles_sizes = self.buffer.copy()
         for i in range(params.TIME_GAP_BETWEEN_NOW_AND_FIRST_FRAME_TO_UPDATE *
@@ -2099,8 +2123,8 @@ class Buffer():
         # sum_typeIII_z_weight = 0
 
         nonzero_zWeight_locs = np.where(
-            (z_weights != 0) & (buffered_tiles_sizes != self.max_tile_sizes))
-        tiles_rate_solution[nonzero_zWeight_locs] = self.max_tile_sizes[
+            (z_weights != 0) & (buffered_tiles_sizes != max_rates_cur_step))
+        tiles_rate_solution[nonzero_zWeight_locs] = max_rates_cur_step[
             nonzero_zWeight_locs]
 
         nonzero_zWeight_frame_idx = nonzero_zWeight_locs[0]
@@ -2110,24 +2134,23 @@ class Buffer():
 
         # pdb.set_trace()
 
-        tiles_values[0][
-            nonzero_zWeight_locs] = z_weights[nonzero_zWeight_locs] / (
-                self.max_tile_sizes[nonzero_zWeight_locs] +
-                self.tile_b_frames[nonzero_zWeight_locs] /
-                self.tile_a_frames[nonzero_zWeight_locs])
+        tiles_values[0][nonzero_zWeight_locs] = z_weights[
+            nonzero_zWeight_locs] / (max_rates_cur_step[nonzero_zWeight_locs] +
+                                     1 / b_updated_tiles[nonzero_zWeight_locs])
 
         # nonzero_zWeight_nonzero_r0_locs = np.where((z_weights != 0) & (buffered_tiles_sizes != self.max_tile_sizes) & (buffered_tiles_sizes != 0))
         r0 = np.zeros(
             (num_frames_to_update, params.NUM_TILES_PER_SIDE_IN_A_FRAME,
              params.NUM_TILES_PER_SIDE_IN_A_FRAME,
              params.NUM_TILES_PER_SIDE_IN_A_FRAME))
-        r0[nonzero_zWeight_locs] = np.maximum(
-            buffered_tiles_sizes[nonzero_zWeight_locs],
-            self.min_rates_frames[nonzero_zWeight_locs])
+
+        # seems redundant between r0 and buffered_tiles_sizes
+        r0[nonzero_zWeight_locs] = buffered_tiles_sizes[
+            nonzero_zWeight_locs].copy()
+
         tiles_values[1][nonzero_zWeight_locs] = z_weights[
             nonzero_zWeight_locs] / (r0[nonzero_zWeight_locs] +
-                                     self.tile_b_frames[nonzero_zWeight_locs] /
-                                     self.tile_a_frames[nonzero_zWeight_locs])
+                                     1 / b_updated_tiles[nonzero_zWeight_locs])
 
         for nonzero_zWeight_idx in range(len(nonzero_zWeight_frame_idx)):
             frame_idx = nonzero_zWeight_frame_idx[nonzero_zWeight_idx]
@@ -2249,7 +2272,7 @@ class Buffer():
         # typeI_tiles_set = set()
         # # r* = r0
         # typeII_tiles_set = set()
-        # r* = z_weight / lambda
+        # r* = z_weight / lambda - 1 / b_k
         typeIII_tiles_set = set()
         visited_typeI_or_II_tiles_set = set()
 
@@ -2273,9 +2296,9 @@ class Buffer():
         tile_loc_tuple = (frame_idx, tile_value_loc["x"], tile_value_loc["y"],
                           tile_value_loc["z"])
         if value_idx == 0:  # type I
+            print("should not enter this if branch!!!!!!!!!!!!!!")
             visited_typeI_or_II_tiles_set.add(tile_loc_tuple)
-            tiles_rate_solution[frame_idx][x][y][z] = self.max_tile_sizes[x][
-                y][z]
+            tiles_rate_solution[frame_idx][x][y][z] = max_rates_cur_step[frame_idx][x][y][z]
         else:  # type II
             visited_typeI_or_II_tiles_set.add(tile_loc_tuple)
             tiles_rate_solution[frame_idx][x][y][z] = r0[frame_idx][x][y][z]
@@ -2299,7 +2322,7 @@ class Buffer():
                 if tile_loc_tuple not in visited_typeI_or_II_tiles_set:  # type III
                     typeIII_tiles_set.add(tile_loc_tuple)
                     tiles_rate_solution[frame_idx][x][y][
-                        z] = z_weights[frame_idx][x][y][z] / lagrange_lambda
+                        z] = z_weights[frame_idx][x][y][z] / lagrange_lambda - 1 / b_updated_tiles[frame_idx][x][y][z]
 
             # print(visited_typeI_or_II_tiles_set)
             # print(typeIII_tiles_set)
@@ -2309,6 +2332,7 @@ class Buffer():
         # pdb.set_trace()
 
         if total_size >= total_size_constraint:  # total budget cannot satisfy all tiles with lowest rate version
+            # with lod-based qr function, this if branch is impossible
             print(
                 "!!!! total budget cannot satisfy all tiles with lowest rate version !!!!!!!"
             )
@@ -2409,7 +2433,7 @@ class Buffer():
                 typeIII_tiles_set.remove(tile_loc_tuple)
             if value_idx == 0:  # type I
                 visited_typeI_or_II_tiles_set.add(tile_loc_tuple)
-                tiles_rate_solution[frame_idx][x][y][z] = self.max_tile_sizes[
+                tiles_rate_solution[frame_idx][x][y][z] = max_rates_cur_step[frame_idx][
                     x][y][z]
             else:  # type II
                 visited_typeI_or_II_tiles_set.add(tile_loc_tuple)
@@ -2433,7 +2457,7 @@ class Buffer():
                             typeIII_tiles_set.remove(tile_loc_tuple)
                         visited_typeI_or_II_tiles_set.add(tile_loc_tuple)
                         tiles_rate_solution[frame_idx][x][y][
-                            z] = self.max_tile_sizes[x][y][z]
+                            z] = max_rates_cur_step[frame_idx][x][y][z]
                     else:
                         if tile_loc_tuple not in visited_typeI_or_II_tiles_set:  # type III
                             typeIII_tiles_set.add(tile_loc_tuple)
@@ -2470,8 +2494,7 @@ class Buffer():
                 z_weight = z_weights[frame_idx][x][y][z]
 
                 tiles_rate_solution[frame_idx][x][y][
-                    z] = z_weight / lagrange_lambda - self.tile_b[x][y][
-                        z] / self.tile_a[x][y][z]
+                    z] = z_weight / lagrange_lambda - 1/b_updated_tiles[frame_idx][x][y][z]
             ##############################################################################################
 
             total_size = np.sum(tiles_rate_solution)
@@ -2537,7 +2560,7 @@ class Buffer():
 
         total_size_of_typeI_and_II_tiles = total_size
         sum_typeIII_z_weight = 0
-        sum_bk_over_ak = 0
+        sum_bk_inverse = 0
         for tile_loc_tuple in typeIII_tiles_set:
             frame_idx = tile_loc_tuple[0]
             x = tile_loc_tuple[1]
@@ -2545,13 +2568,13 @@ class Buffer():
             z = tile_loc_tuple[3]
             z_weight = z_weights[frame_idx][x][y][z]
             sum_typeIII_z_weight += z_weight
-            sum_bk_over_ak += self.tile_b[x][y][z] / self.tile_a[x][y][z]
+            sum_bk_inverse += 1/b_updated_tiles[frame_idx][x][y][z]
             total_size_of_typeI_and_II_tiles -= tiles_rate_solution[frame_idx][
                 x][y][z]
 
         byte_size_constraint_of_typeIII_tiles = total_size_constraint - total_size_of_typeI_and_II_tiles
         lagrange_lambda = sum_typeIII_z_weight / (
-            byte_size_constraint_of_typeIII_tiles + sum_bk_over_ak)
+            byte_size_constraint_of_typeIII_tiles + sum_bk_inverse)
 
         # lambda is between (left_idx, right_idx)
         print("left_idx, right_idx: ", left_idx, right_idx)
@@ -2571,15 +2594,14 @@ class Buffer():
             z_weight = z_weights[frame_idx][x][y][z]
 
             tiles_rate_solution[frame_idx][x][y][
-                z] = z_weight / lagrange_lambda - self.tile_b[x][y][
-                    z] / self.tile_a[x][y][z]
+                z] = z_weight / lagrange_lambda - 1/b_updated_tiles[frame_idx][x][y][z]
 
-            if tiles_rate_solution[frame_idx][x][y][z] >= self.max_tile_sizes[
+            if tiles_rate_solution[frame_idx][x][y][z] >= max_rates_cur_step[frame_idx][
                     x][y][z]:
                 print("!!!!!!!! tile size: %f,  MAX size: %f" %
                       (tiles_rate_solution[frame_idx][x][y][z],
                        self.max_tile_sizes[x][y][z]))
-                tiles_rate_solution[frame_idx][x][y][z] = self.max_tile_sizes[
+                tiles_rate_solution[frame_idx][x][y][z] = max_rates_cur_step[frame_idx][
                     x][y][z]
                 # pdb.set_trace()
             if tiles_rate_solution[frame_idx][x][y][z] <= buffered_tiles_sizes[
@@ -2589,13 +2611,13 @@ class Buffer():
                        buffered_tiles_sizes[frame_idx][x][y][z]))
                 tiles_rate_solution[frame_idx][x][y][z] = buffered_tiles_sizes[
                     frame_idx][x][y][z]
-                pdb.set_trace()
+                # pdb.set_trace()
             assert (
                 tiles_rate_solution[frame_idx][x][y][z] <=
-                self.max_tile_sizes[x][y][z]
+                max_rates_cur_step[frame_idx][x][y][z]
             ), "!!!!!!! tile size: %f too large, reaches params.MAX_TILE_SIZE %f (during divide-and-conquer) !!!!!!!" % (
                 tiles_rate_solution[frame_idx][x][y][z],
-                self.max_tile_sizes[x][y][z])
+                max_rates_cur_step[frame_idx][x][y][z])
             assert (
                 tiles_rate_solution[frame_idx][x][y][z] >=
                 buffered_tiles_sizes[frame_idx][x][y][z]
@@ -2619,7 +2641,7 @@ class Buffer():
                 z_weight_locations, sorted_z_weights)
         ##################
 
-        print("rounding--- ", time.time() - self.start_time, " seconds ---")
+            print("rounding--- ", time.time() - self.start_time, " seconds ---")
 
         total_size = np.sum(tiles_rate_solution)
 
