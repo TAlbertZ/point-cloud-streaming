@@ -8,6 +8,10 @@ MMSYS_HYBRID_TILING = False
 
 SAVE_WHEN_PLOTTING = True
 
+SHOW_ANGULAR_RESOL = True
+
+WEIGHTED_AVERAGE_ANG_RESOL = True
+
 
 class ActionInitType(Enum):
     LOW = 0
@@ -28,6 +32,7 @@ class FrameWeightType(Enum):
     LINEAR_DECREASE = 1
     EXP_DECREASE = 2
     FOV_PRED_ACCURACY = 3  # based on fov overlap ratio between pred and true
+    STEP_FUNC = 4
 
 SCALABLE_CODING = True
 
@@ -42,6 +47,14 @@ TILE_UTILITY_COEF = np.array(
      0.26403939])  # a0 is intercept, a0~a4
 
 FRAME_WEIGHT_TYPE = FrameWeightType.CONST
+MAX_FRAME_WEIGHT = 1.05
+MIN_FRAME_WEIGHT = 1
+
+FRAME_WEIGHT_STEP_IDX = 30
+
+FRAME_WEIGHT_EXP_BOTTOM = 10
+FRAME_WEIGHT_EXP_FACTOR = 1.5
+
 
 ALGO = Algo.KKT
 ACTION_INIT_TYPE = ActionInitType.LOW
@@ -123,6 +136,8 @@ else:
 FOV_TRACES_PATH = '../fov_traces/6DoF-HMD-UserNavigationData/NavigationData/H1_u1.txt'
 
 BANDWIDTH_TRACES_PATH = '../bw_traces/100ms_loss1.txt'
+# BANDWIDTH_TRACES_PATH = '../bw_traces/square_wave.txt'
+BANDWIDTH_TRACES_PATH = '../bw_traces/constant_wave.txt'
 # BANDWIDTH_TRACES_PATH = '../bandwidth_5G/BW_Trace_5G_0.txt'
 
 FOV_PREDICTION_HISTORY_WIN_LENGTH = (
@@ -190,3 +205,6 @@ MAP_SIZE_TO_VERSION = {
 NUM_RATE_VERSIONS = 6
 BARRIER_WEIGHT = 1e-9
 QUALITY_SUM_WEIGHT = 500
+
+PROGRESSIVE_DOWNLOADING = False
+FAKE_MAE_ERROR = False

@@ -1,4 +1,5 @@
 import numpy as np
+import pickle as pk
 import pdb
 import os
 import matplotlib.pyplot as plt
@@ -12,12 +13,35 @@ np.random.seed(7)
 class PlotFigs():
 
     def __init__(self):
+        results_path = None
         if params.ALGO == params.Algo.ILQR:
-            self.directory = './ilqr_results/buf' + str(
-                params.TARGET_LATENCY // params.FPS) + 's'
+            results_path= 'ilqr_results'
         elif params.ALGO == params.Algo.KKT:
-            self.directory = './kkt_results/buf' + str(
-                params.TARGET_LATENCY // params.FPS) + 's'
+            results_path = 'kkt_results'
+        else:
+            pass
+
+        if not params.PROGRESSIVE_DOWNLOADING:
+            results_path = os.path.join(results_path, 'non_progress')
+
+        self.directory = os.path.join(results_path, 'buf' + str(
+            params.TARGET_LATENCY // params.FPS) + 's')
+
+        if not params.FOV_ORACLE_KNOW:
+            self.directory = os.path.join(self.directory, 'wFovErr_arma')
+
+            if params.FRAME_WEIGHT_TYPE == params.FrameWeightType.LINEAR_DECREASE:
+                self.directory = os.path.join(self.directory, 'frameWeight_linear')
+            elif params.FRAME_WEIGHT_TYPE == params.FrameWeightType.FOV_PRED_ACCURACY:
+                self.directory = os.path.join(self.directory, 'frameWeight_fovErr')
+            elif params.FRAME_WEIGHT_TYPE == params.FrameWeightType.STEP_FUNC:
+                self.directory = os.path.join(self.directory, 'frameWeight_step')
+            elif params.FRAME_WEIGHT_TYPE == params.FrameWeightType.EXP_DECREASE:
+                self.directory = os.path.join(self.directory, 'frameWeight_exp')
+            else:
+                pass
+        else:
+            self.directory = os.path.join(self.directory, 'noFovErr')
 
         # If the directory does not exist, create it
         if not os.path.exists(self.directory):
@@ -66,6 +90,9 @@ class PlotFigs():
         plt.xticks(fontsize=15)
         # plt.yticks([0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45], fontsize=30)
         plt.yticks(range(0, 220, 20), fontsize=15)
+ 
+        plt.text(250, 180, 'mean={:f}, std={:f}'.format(np.mean(frame_quality_lists[params.BUFFER_LENGTH:]), np.std(frame_quality_lists[params.BUFFER_LENGTH:])), fontsize=15, fontweight='bold')
+
         # plt.tight_layout()
         if params.SAVE_WHEN_PLOTTING:
             # The final path to save to
@@ -119,9 +146,9 @@ class PlotFigs():
         # print(frame_quality_lists[params.BUFFER_LENGTH:])
         # print(num_valid_tiles_per_frame[params.BUFFER_LENGTH:])
         # print(np.array(frame_quality_lists[params.BUFFER_LENGTH:]) / np.array(num_valid_tiles_per_frame[params.BUFFER_LENGTH:]))
+        mean_quality = np.array(frame_quality_lists[params.BUFFER_LENGTH:]) /np.array(num_valid_tiles_per_frame[params.BUFFER_LENGTH:])
         plt.plot(frame_indexes,
-                 np.array(frame_quality_lists[params.BUFFER_LENGTH:]) /
-                 np.array(num_valid_tiles_per_frame[params.BUFFER_LENGTH:]),
+                 mean_quality,
                  linewidth=2,
                  color='red')
         # legend.append('constant Wj, know BW')
@@ -133,17 +160,26 @@ class PlotFigs():
         plt.grid(linestyle='dashed', axis='y', linewidth=1.5, color='gray')
         plt.title('Mean Tile Quality per Frame of Longdress, Latency=%ds' %
                   (params.TARGET_LATENCY // params.FPS),
-                  fontsize=40,
+                  fontsize=20,
                   fontweight='bold')
 
-        plt.xlabel('frame idx', fontsize=40, fontweight='bold')
-        plt.ylabel('mean tile quality', fontsize=40, fontweight='bold')
+        plt.xlabel('frame idx', fontsize=15, fontweight='bold')
+        plt.ylabel('mean tile quality', fontsize=15, fontweight='bold')
 
-        plt.xticks(fontsize=30)
+        plt.xticks(fontsize=15)
         # plt.yticks([0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45], fontsize=30)
-        plt.yticks(fontsize=30)
+        # plt.yticks(np.linspace(0, 3, 13), fontsize=15)
+        plt.yticks(fontsize=15)
         # plt.tight_layout()
-        plt.show()
+        plt.text(250, 0.5, 'mean={:f}, std={:f}'.format(np.mean(mean_quality[300:]), np.std(mean_quality[300:])), fontsize=15, fontweight='bold')
+        if params.SAVE_WHEN_PLOTTING:
+            # The final path to save to
+            file_name = 'frame_mean_tile_quality_bw' + str(params.SCALE_BW) + '_constWave.eps'
+            save_path = os.path.join(self.directory, file_name)
+            plt.savefig(save_path, transparent=True, bbox_inches='tight')
+        else:
+            plt.show()
+        plt.close()
 
         # pdb.set_trace()
 
@@ -496,7 +532,7 @@ class PlotFigs():
         num_frames = len(fov_predict_accuracy_trace['x'])
         num_updates = len(fov_predict_accuracy_trace['x'][0])
         timestamps_in_sec = range(num_updates)
-        num_valid_accuracy = (params.NUM_FRAMES_VIEWED - params.BUFFER_LENGTH
+        num_valid_accuracy = (params.NUM_FRAMES_VIEWED # - params.BUFFER_LENGTH
                               ) // (params.UPDATE_FREQ * params.FPS)
         ###########################
         # x 	  y 	  z
@@ -508,7 +544,7 @@ class PlotFigs():
             num_frames - 1: "buffer end"
         }
         fig, axs = plt.subplots(2, 3)
-        fig.suptitle("FoV prediction Accuracy", fontsize=30, fontweight='bold')
+        fig.suptitle("FoV prediction Accuracy", fontsize=8, fontweight='bold')
         for key in fov_predict_accuracy_trace:
             pos_row = params.MAP_DOF_TO_PLOT_POS[key][0]
             pos_col = params.MAP_DOF_TO_PLOT_POS[key][1]
@@ -522,24 +558,32 @@ class PlotFigs():
                                   linewidth=2)
                 legend.append(map_from_pos_in_buffer_to_legend[pos_in_buffer])
             axs[pos_row, pos_col].legend(legend,
-                                         fontsize=15,
+                                         fontsize=8,
                                          prop={'weight': 'bold'},
                                          loc='best',
                                          ncol=1)
             axs[pos_row, pos_col].set_title(key,
-                                            fontsize=15,
+                                            fontsize=8,
                                             fontweight='bold')
             axs[pos_row, pos_col].set_ylabel('Absolute Error',
-                                             fontsize=20.0)  # Y label
-            axs[pos_row, pos_col].set_xlabel('time/s', fontsize=20)  # X label
-            axs[pos_row, pos_col].tick_params(axis='both', labelsize=15)
+                                             fontsize=8)  # Y label
+            axs[pos_row, pos_col].set_xlabel('time/s', fontsize=8)  # X label
+            axs[pos_row, pos_col].tick_params(axis='both', labelsize=8)
             axs[pos_row, pos_col].grid(linestyle='dashed',
                                        axis='y',
                                        linewidth=1.5,
                                        color='gray')
             # axs[pos_row, pos_col].label_outer()
 
-        plt.show()
+        if params.SAVE_WHEN_PLOTTING:
+            # The final path to save to
+            file_name = 'fov_pred_absError_vs_time_buf' + str(params.TARGET_LATENCY // params.FPS) + 's.eps'
+            save_path = os.path.join('fov_pred', file_name)
+            plt.savefig(save_path, transparent=True, bbox_inches='tight')
+        else:
+            plt.show()
+        plt.close()
+
 
     def plot_mean_fov_prediction_accuracy_for_every_buffer_pos(
             self, fov_predict_accuracy_trace):
@@ -550,15 +594,15 @@ class PlotFigs():
         num_frames = len(fov_predict_accuracy_trace['x'])
         frame_indexes = range(num_frames)
         num_updates = len(fov_predict_accuracy_trace['x'][0])
-        num_valid_accuracy = (params.NUM_FRAMES_VIEWED - params.BUFFER_LENGTH
+        num_valid_accuracy = (params.NUM_FRAMES_VIEWED # - params.BUFFER_LENGTH
                               ) // (params.UPDATE_FREQ * params.FPS)
         ###########################
         # x 	  y 	  z
         # pitch   yaw	 roll
         ###########################
-        fig, axs = plt.subplots(2, 3)
+        fig, axs = plt.subplots(2, 3, sharex='col', sharey='row')
         fig.suptitle("Mean FoV prediction Accuracy (MAE)",
-                     fontsize=30,
+                     fontsize=8,
                      fontweight='bold')
         for key in fov_predict_accuracy_trace:
 
@@ -571,20 +615,35 @@ class PlotFigs():
                               np.array(fov_predict_accuracy_trace[key])
                               [:, :num_valid_accuracy].mean(axis=1),
                               linewidth=2)
+
+            # with open('./fov_pred/mae_vs_buflen_' + key + '.pkl', 'wb+') as filehandle:
+            # 	pk.dump(np.array(fov_predict_accuracy_trace[key])[:, :num_valid_accuracy].mean(axis=1), filehandle)
+            # filehandle.close()
+
+            # pdb.set_trace()
             # legend.append(map_from_pos_in_buffer_to_legend[pos_in_buffer])
-            # axs[pos_row, pos_col].legend(legend, fontsize=15, prop={'weight':'bold'}, loc='best', ncol=1)
+            # axs[pos_row, pos_col].legend(legend, fontsize=8, prop={'weight':'bold'}, loc='best', ncol=1)
             axs[pos_row, pos_col].set_title(key,
-                                            fontsize=15,
+                                            fontsize=8,
                                             fontweight='bold')
-            axs[pos_row, pos_col].set_ylabel('Mean Absolute Error',
-                                             fontsize=20.0)  # Y label
-            axs[pos_row, pos_col].set_xlabel('frame idx',
-                                             fontsize=20)  # X label
-            axs[pos_row, pos_col].tick_params(axis='both', labelsize=15)
+            if key == 'x' or key == 'pitch':
+                axs[pos_row, pos_col].set_ylabel('Mean Absolute Error',
+                                                 fontsize=8)  # Y label
+            if key == 'yaw' or key == 'pitch' or key == 'roll':
+                axs[pos_row, pos_col].set_xlabel('frame idx',
+                                                 fontsize=8)  # X label
+            axs[pos_row, pos_col].tick_params(axis='both', labelsize=8)
             axs[pos_row, pos_col].grid(linestyle='dashed',
                                        axis='y',
                                        linewidth=1.5,
                                        color='gray')
             # axs[pos_row, pos_col].label_outer()
 
-        plt.show()
+        if params.SAVE_WHEN_PLOTTING:
+            # The final path to save to
+            file_name = 'fov_pred_mae_vs_hor_buf' + str(params.TARGET_LATENCY // params.FPS) + 's.eps'
+            save_path = os.path.join('fov_pred', file_name)
+            plt.savefig(save_path, transparent=True) #, bbox_inches='tight')
+        else:
+            plt.show()
+        plt.close()

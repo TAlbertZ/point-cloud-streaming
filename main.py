@@ -119,9 +119,11 @@ def main():
     # # print(buffer_obj.num_valid_tiles_per_frame[params.BUFFER_LENGTH:])
     # plot_figs_obj.plot_num_valid_tiles_per_frame(
     #     buffer_obj.num_valid_tiles_per_frame)
-    # # plot_mean_tile_quality_per_frame_trace(buffer_obj.frame_quality, buffer_obj.num_valid_tiles_per_frame)
-    plot_figs_obj.plot_frame_quality_trace(buffer_obj.frame_quality)
-    plot_figs_obj.plot_frame_quality_var_trace(buffer_obj.frame_quality_var)
+
+    plot_figs_obj.plot_mean_tile_quality_per_frame_trace(buffer_obj.frame_quality, buffer_obj.num_valid_tiles_per_frame)
+    # plot_figs_obj.plot_frame_quality_trace(buffer_obj.frame_quality)
+    # plot_figs_obj.plot_frame_quality_var_trace(buffer_obj.frame_quality_var)
+
     # plot_figs_obj.plot_frame_size_trace(buffer_obj.frame_size_list)
     # # plot_figs_obj.plot_bandwidth_trace(buffer_obj.plot_bw_trace, buffer_obj.plot_predicted_bw_trace, buffer_obj.bw_predict_accuracy_trace)
     # # plot_figs_obj.plot_filtered_bandwidth_trace(buffer_obj.plot_bw_trace, buffer_obj.plot_predicted_bw_trace)

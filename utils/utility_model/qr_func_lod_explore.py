@@ -7,6 +7,9 @@ import pickle as pk
 SATURATION_EFFECT = False
 
 TILE_WIDTH = 1.8 / 16  # meter
+SATURATION_RESOLUTION = 60
+THETA_FACTOR = np.exp(1) / SATURATION_RESOLUTION
+#THETA_FACTOR = 0.01
 distances = []
 num_points = []
 
@@ -65,18 +68,25 @@ for tile_idx in range(10):
             num_points_per_degree[np.where(num_points_per_degree >= 60)] = 60
 
         print(num_points_per_degree)
-        quality = np.log(num_points_per_degree)
+        quality = theta * np.log(THETA_FACTOR * num_points_per_degree)
         print(quality)
+
+        saturation_theta = 2**lod / SATURATION_RESOLUTION
+        saturation_dist = TILE_WIDTH / (saturation_theta * np.pi / 180)
+        saturation_quality = saturation_theta * np.log(THETA_FACTOR * SATURATION_RESOLUTION)
 
         plt.plot(distances, quality, linewidth=2)
         legend.append('size = %d Byte' % (rate))
-    plt.legend(legend, fontsize=10, loc='best', ncol=1)
+ 
+        if rate_idx <= 0:
+            plt.plot(saturation_dist, saturation_quality, marker="o", markersize=10, markeredgecolor="red", markerfacecolor="green")
+    # plt.legend(legend, fontsize=10, loc='best', ncol=1)
     plt.xlabel('distance / m', fontsize=15, fontweight='bold')
     plt.ylabel('utility', fontsize=15, fontweight='bold')
     plt.xticks(fontsize=15)
     plt.yticks(fontsize=15)
     # plt.show()
-    plt.savefig("results_utility_func/cap_utility_distance" + str(tile_idx) + ".eps", bbox_inches='tight')
+    plt.savefig("results_utility_func_explore/utility_distance" + str(tile_idx) + ".eps", bbox_inches='tight')
 
     plt.close()
     ####################### x-axis: rate ##########################
@@ -93,12 +103,12 @@ for tile_idx in range(10):
         if SATURATION_EFFECT:
             num_points_per_degree[np.where(num_points_per_degree >= 60)] = 60
 
-        quality = np.log(num_points_per_degree)
+        quality = theta * np.log(THETA_FACTOR * num_points_per_degree)
         plt.plot(size_versions, quality, linewidth=2)
         legend.append('distance = ' + str(distance) + 'm')
     plt.legend(legend, fontsize=10, loc='best', ncol=1)
     plt.xlabel('rate / Byte')
     plt.ylabel('utility')
     # plt.show()
-    plt.savefig("results_utility_func/cap_utility_rate" + str(tile_idx) + ".eps", bbox_inches='tight')
+    plt.savefig("results_utility_func_explore/utility_rate" + str(tile_idx) + ".eps", bbox_inches='tight')
     plt.close()

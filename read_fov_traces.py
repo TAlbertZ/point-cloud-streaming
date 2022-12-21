@@ -16,6 +16,18 @@ class FovTraces():
 
     def __init__(self):
         self.fov_traces = None
+        self.fov_predict_mae_vs_buflen = {
+            "x": [],
+            'y': [],
+            "z": [],
+            "pitch": [],
+            "yaw": [],
+            "roll": []
+        }
+        for key in params.MAP_DOF_TO_PLOT_POS:
+            file = open('./fov_pred/mae_vs_buflen_' + key + '.pkl', 'rb')
+            self.fov_predict_mae_vs_buflen[key] = pk.load(file)
+            file.close()
 
     def read_fov_traces(self, path):
         '''
@@ -97,6 +109,11 @@ class FovTraces():
                 # print("key: ", key)
                 truncated_idx = self.truncate_trace(
                     history_viewpoints[key][-history_win:])
+                # if truncated_idx != 0:
+                #     print("truncated_idx is: ", truncated_idx)
+                #     print("key is: ", key, ", history win is: ", history_win, ", pred win is: ", prediction_win)
+                #     print("history seq:\n", history_viewpoints[key][-history_win:])
+                #     pdb.set_trace()
                 x_list = np.arange(history_win - truncated_idx).reshape(-1, 1)
                 y_list = np.array(
                     history_viewpoints[key][-history_win +
@@ -110,7 +127,19 @@ class FovTraces():
                         predicted_dof -= 360
 
                 if not params.FOV_ORACLE_KNOW:
-                    predicted_viewpoints[key].append(predicted_dof)
+                    if params.FAKE_MAE_ERROR:
+                        sign = 1 if np.random.random() < 0.5 else -1
+                        predicted_viewpoints[key].append(
+                            self.fov_traces[frame_idx][
+                                params.MAP_6DOF_TO_HMD_DATA[key]] +
+                            sign * self.fov_predict_mae_vs_buflen[key]
+                            [prediction_win - 1 - params.FPS * params.
+                             TIME_GAP_BETWEEN_NOW_AND_FIRST_FRAME_TO_UPDATE] * 0.01)
+                        # print(prediction_win - 1 - params.FPS * params.
+                        #      TIME_GAP_BETWEEN_NOW_AND_FIRST_FRAME_TO_UPDATE)
+                        # pdb.set_trace()
+                    else:
+                        predicted_viewpoints[key].append(predicted_dof)
                 else:
                     ### know future fov oracle ##
                     predicted_viewpoints[key].append(
