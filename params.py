@@ -33,6 +33,7 @@ class FrameWeightType(Enum):
     EXP_DECREASE = 2
     FOV_PRED_ACCURACY = 3  # based on fov overlap ratio between pred and true
     STEP_FUNC = 4
+    BELL_SHAPE = 5
 
 SCALABLE_CODING = True
 
@@ -46,14 +47,16 @@ TILE_UTILITY_COEF = np.array(
     [-0.7834842486065501, -0.03049975, 2.78785111, -1.4918287,
      0.26403939])  # a0 is intercept, a0~a4
 
-FRAME_WEIGHT_TYPE = FrameWeightType.CONST
-MAX_FRAME_WEIGHT = 1.05
+FRAME_WEIGHT_TYPE = FrameWeightType.EXP_DECREASE
+MAX_FRAME_WEIGHT = 1e9
 MIN_FRAME_WEIGHT = 1
 
-FRAME_WEIGHT_STEP_IDX = 30
+FRAME_WEIGHT_STEP_IDX = 60
 
 FRAME_WEIGHT_EXP_BOTTOM = 10
-FRAME_WEIGHT_EXP_FACTOR = 1.5
+FRAME_WEIGHT_EXP_FACTOR = 6
+
+FRAME_WEIGHT_PEAK_IDX = 60
 
 
 ALGO = Algo.KKT
@@ -66,7 +69,7 @@ SMOOTH_MIN_PARAM = 50
 FPS = 30
 
 # FIXME currently if latency larger than 300 will have problem
-TARGET_LATENCY = 300  # in frame
+TARGET_LATENCY = 600  # in frame
 ILQR_HORIZON = TARGET_LATENCY // FPS
 
 # Assume frame is independently encoded/decoded
@@ -133,11 +136,11 @@ elif VIDEO_NAME == 'soldier':
 else:
     pass
 # FOV_TRACES_PATH = '../fov_traces/6DoF-HMD-UserNavigationData/NavigationData/' + fov_traces_file
-FOV_TRACES_PATH = '../fov_traces/6DoF-HMD-UserNavigationData/NavigationData/H1_u1.txt'
+FOV_TRACES_PATH = '../fov_traces/6DoF-HMD-UserNavigationData/NavigationData/H1_u7.txt'
 
 BANDWIDTH_TRACES_PATH = '../bw_traces/100ms_loss1.txt'
 # BANDWIDTH_TRACES_PATH = '../bw_traces/square_wave.txt'
-BANDWIDTH_TRACES_PATH = '../bw_traces/constant_wave.txt'
+# BANDWIDTH_TRACES_PATH = '../bw_traces/constant_wave.txt'
 # BANDWIDTH_TRACES_PATH = '../bandwidth_5G/BW_Trace_5G_0.txt'
 
 FOV_PREDICTION_HISTORY_WIN_LENGTH = (
@@ -148,6 +151,10 @@ BW_PREDICTION_HISTORY_WIN_LENGTH = 5  # in second
 
 OBJECT_SIDE_LEN = 1.8  # meter, according to http://plenodb.jpeg.org/pc/8ilabs
 TILE_SIDE_LEN = OBJECT_SIDE_LEN / NUM_TILES_PER_SIDE_IN_A_FRAME  # meter
+
+SATURATION_RESOLUTION = 60 # angular resolution, i.e. # points per degree
+QR_MODEL_LOG_FACTOR = np.exp(1) / SATURATION_RESOLUTION # Q(r)=theta * log(c * resol), where c is log factor
+#THETA_FACTOR = 0.01
 
 FOV_DEGREE_SPAN = np.pi / 2  # 90 degrees, a circle fov
 
@@ -160,7 +167,7 @@ BANDWIDTH_ORACLE_KNOWN = True
 if MMSYS_HYBRID_TILING:
     BANDWIDTH_ORACLE_KNOWN = True
 
-FOV_ORACLE_KNOW = True
+FOV_ORACLE_KNOW = False
 
 Mbps_TO_Bps = 1e6 / 8
 
@@ -187,7 +194,7 @@ QUANTIZE_TILE_SIZE = False
 
 ROUND_TILE_SIZE = False
 
-SCALE_BW = 1  # know bw oracle, otherwise not correct
+SCALE_BW = 5  # know bw oracle, otherwise not correct
 
 MAP_VERSION_TO_SIZE = {
     0: 0,
@@ -206,5 +213,9 @@ NUM_RATE_VERSIONS = 6
 BARRIER_WEIGHT = 1e-9
 QUALITY_SUM_WEIGHT = 500
 
-PROGRESSIVE_DOWNLOADING = False
+PROGRESSIVE_DOWNLOADING = True
 FAKE_MAE_ERROR = False
+TRUNCATE_LINEAR_REGRESSION = True
+SCALE_FOV_PREDICTION_WIN = 0.5
+FIX_FOV_PRED_WIN = False
+FOV_PRED_WIN_LEN = 1

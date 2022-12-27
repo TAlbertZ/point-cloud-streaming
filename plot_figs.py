@@ -38,6 +38,8 @@ class PlotFigs():
                 self.directory = os.path.join(self.directory, 'frameWeight_step')
             elif params.FRAME_WEIGHT_TYPE == params.FrameWeightType.EXP_DECREASE:
                 self.directory = os.path.join(self.directory, 'frameWeight_exp')
+            elif params.FRAME_WEIGHT_TYPE == params.FrameWeightType.BELL_SHAPE:
+                self.directory = os.path.join(self.directory, 'frameWeight_bell')
             else:
                 pass
         else:
@@ -89,9 +91,9 @@ class PlotFigs():
 
         plt.xticks(fontsize=15)
         # plt.yticks([0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45], fontsize=30)
-        plt.yticks(range(0, 220, 20), fontsize=15)
+        # plt.yticks(range(0, 220, 20), fontsize=15)
  
-        plt.text(250, 180, 'mean={:f}, std={:f}'.format(np.mean(frame_quality_lists[params.BUFFER_LENGTH:]), np.std(frame_quality_lists[params.BUFFER_LENGTH:])), fontsize=15, fontweight='bold')
+        plt.text(250, 20, 'mean={:f}, std={:f}'.format(np.mean(frame_quality_lists[2 * params.BUFFER_LENGTH:]), np.std(frame_quality_lists[2 * params.BUFFER_LENGTH:])), fontsize=15, fontweight='bold')
 
         # plt.tight_layout()
         if params.SAVE_WHEN_PLOTTING:
@@ -175,6 +177,50 @@ class PlotFigs():
         if params.SAVE_WHEN_PLOTTING:
             # The final path to save to
             file_name = 'frame_mean_tile_quality_bw' + str(params.SCALE_BW) + '_constWave.eps'
+            save_path = os.path.join(self.directory, file_name)
+            plt.savefig(save_path, transparent=True, bbox_inches='tight')
+        else:
+            plt.show()
+        plt.close()
+
+        # pdb.set_trace()
+
+    def plot_per_degree_quality_per_frame_trace(self, frame_quality_lists,
+                                               total_span_per_frame):
+        frame_indexes = range(len(frame_quality_lists) - params.BUFFER_LENGTH)
+        legend = []
+        # print(frame_quality_lists[params.BUFFER_LENGTH:])
+        # print(total_span_per_frame[params.BUFFER_LENGTH:])
+        # print(np.array(frame_quality_lists[params.BUFFER_LENGTH:]) / np.array(total_span_per_frame[params.BUFFER_LENGTH:]))
+        mean_quality = np.array(frame_quality_lists[params.BUFFER_LENGTH:]) /np.array(total_span_per_frame[params.BUFFER_LENGTH:])
+        plt.plot(frame_indexes,
+                 mean_quality,
+                 linewidth=2,
+                 color='red')
+        # legend.append('constant Wj, know BW')
+        # plt.plot(frame_indexes, frame_quality_lists[1][params.TIME_GAP_BETWEEN_NOW_AND_FIRST_FRAME_TO_UPDATE * params.FPS:], linewidth=2, color='blue')
+        legend.append('know BW')
+        # plt.plot(frame_indexes, frame_quality_lists[2][params.TIME_GAP_BETWEEN_NOW_AND_FIRST_FRAME_TO_UPDATE * params.FPS:], linewidth=2, color='green')
+        # legend.append('linear (steep) Wj, know BW')
+        # plt.legend(legend, fontsize=30, loc='best', ncol=1)
+        plt.grid(linestyle='dashed', axis='y', linewidth=1.5, color='gray')
+        plt.title('Per Degree Quality per Frame of Longdress, Latency=%ds' %
+                  (params.TARGET_LATENCY // params.FPS),
+                  fontsize=20,
+                  fontweight='bold')
+
+        plt.xlabel('frame idx', fontsize=15, fontweight='bold')
+        plt.ylabel('per degree quality', fontsize=15, fontweight='bold')
+
+        plt.xticks(fontsize=15)
+        # plt.yticks([0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45], fontsize=30)
+        # plt.yticks(np.linspace(0, 3, 13), fontsize=15)
+        plt.yticks(fontsize=15)
+        # plt.tight_layout()
+        plt.text(250, 1, 'mean={:f}, std={:f}'.format(np.mean(mean_quality[300:]), np.std(mean_quality[300:])), fontsize=15, fontweight='bold')
+        if params.SAVE_WHEN_PLOTTING:
+            # The final path to save to
+            file_name = 'frame_per_degree_quality_bw' + str(params.SCALE_BW) + '.eps'
             save_path = os.path.join(self.directory, file_name)
             plt.savefig(save_path, transparent=True, bbox_inches='tight')
         else:

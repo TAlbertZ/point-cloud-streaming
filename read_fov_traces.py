@@ -1,6 +1,7 @@
 import numpy as np
 import pickle as pk
 import pdb
+import re
 from sklearn.linear_model import LinearRegression
 import pandas as pd
 
@@ -61,7 +62,9 @@ class FovTraces():
         line_idx = 0
         f = open(path, "r")
         for line in f:
-            line_list = line.split()
+            # line_list = line.split()
+            line_list = re.split('[, \t]', line)
+            # line_list = re.split(',| |\t', line) # also works
             self.fov_traces.append([
                 float(line_list[1]),
                 float(line_list[2]),
@@ -97,7 +100,11 @@ class FovTraces():
 
         for frame_idx in range(predict_start_idx, predict_end_idx + 1):
             prediction_win = frame_idx - current_viewing_frame_idx
-            history_win = prediction_win // 2  # according to vivo paper, best use half of prediciton window
+            history_win = 1
+            if not params.FIX_FOV_PRED_WIN:
+                history_win = int(prediction_win * params.SCALE_FOV_PREDICTION_WIN)  # according to vivo paper, best use half of prediciton window
+            else:
+                history_win = params.FOV_PRED_WIN_LEN
             history_win = history_win if len(
                 history_viewpoints['x']) >= history_win else len(
                     history_viewpoints['x'])
@@ -107,13 +114,16 @@ class FovTraces():
             # print("x: ", x_list)
             for key in predicted_viewpoints.keys():
                 # print("key: ", key)
-                truncated_idx = self.truncate_trace(
-                    history_viewpoints[key][-history_win:])
-                # if truncated_idx != 0:
-                #     print("truncated_idx is: ", truncated_idx)
-                #     print("key is: ", key, ", history win is: ", history_win, ", pred win is: ", prediction_win)
-                #     print("history seq:\n", history_viewpoints[key][-history_win:])
-                #     pdb.set_trace()
+                if params.TRUNCATE_LINEAR_REGRESSION:
+                    truncated_idx = self.truncate_trace(
+                        history_viewpoints[key][-history_win:])
+                    # if truncated_idx != 0:
+                    #     print("truncated_idx is: ", truncated_idx)
+                    #     print("key is: ", key, ", history win is: ", history_win, ", pred win is: ", prediction_win)
+                    #     print("history seq:\n", history_viewpoints[key][-history_win:])
+                    #     pdb.set_trace()
+                else:
+                    truncated_idx = 0
                 x_list = np.arange(history_win - truncated_idx).reshape(-1, 1)
                 y_list = np.array(
                     history_viewpoints[key][-history_win +
@@ -134,7 +144,7 @@ class FovTraces():
                                 params.MAP_6DOF_TO_HMD_DATA[key]] +
                             sign * self.fov_predict_mae_vs_buflen[key]
                             [prediction_win - 1 - params.FPS * params.
-                             TIME_GAP_BETWEEN_NOW_AND_FIRST_FRAME_TO_UPDATE] * 0.01)
+                             TIME_GAP_BETWEEN_NOW_AND_FIRST_FRAME_TO_UPDATE] * 0.01) # * 5 or 10 for non-progressive
                         # print(prediction_win - 1 - params.FPS * params.
                         #      TIME_GAP_BETWEEN_NOW_AND_FIRST_FRAME_TO_UPDATE)
                         # pdb.set_trace()

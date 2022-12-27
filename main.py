@@ -120,8 +120,9 @@ def main():
     # plot_figs_obj.plot_num_valid_tiles_per_frame(
     #     buffer_obj.num_valid_tiles_per_frame)
 
-    plot_figs_obj.plot_mean_tile_quality_per_frame_trace(buffer_obj.frame_quality, buffer_obj.num_valid_tiles_per_frame)
-    # plot_figs_obj.plot_frame_quality_trace(buffer_obj.frame_quality)
+    # plot_figs_obj.plot_mean_tile_quality_per_frame_trace(buffer_obj.frame_quality, buffer_obj.num_valid_tiles_per_frame)
+    # plot_figs_obj.plot_per_degree_quality_per_frame_trace(buffer_obj.frame_quality, buffer_obj.total_span_per_frame)
+    plot_figs_obj.plot_frame_quality_trace(buffer_obj.frame_quality)
     # plot_figs_obj.plot_frame_quality_var_trace(buffer_obj.frame_quality_var)
 
     # plot_figs_obj.plot_frame_size_trace(buffer_obj.frame_size_list)
