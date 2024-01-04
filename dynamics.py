@@ -66,6 +66,7 @@ class AutoDiffDynamics():
             viewing_probability[params.TARGET_LATENCY + i *
                                 params.FPS:self.next_state_start_frame_idx +
                                 params.TARGET_LATENCY])
+        # not correct if buf len == 1
         self.num_old_tiles_removed_from_current_state = np.count_nonzero(
             viewing_probability[i *
                                 params.FPS:self.next_state_start_frame_idx])

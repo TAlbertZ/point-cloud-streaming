@@ -1,8 +1,12 @@
+import sys
 import numpy as np
 from sklearn.linear_model import LinearRegression
 import pdb
 import matplotlib.pyplot as plt
 import pickle as pk
+
+sys.path.append("../..")
+import params
 
 SATURATION_EFFECT = False
 
@@ -68,19 +72,19 @@ for tile_idx in range(10):
             num_points_per_degree[np.where(num_points_per_degree >= 60)] = 60
 
         print(num_points_per_degree)
-        quality = theta * np.log(THETA_FACTOR * num_points_per_degree)
+        quality = theta * np.log(THETA_FACTOR * num_points_per_degree) + params.RELATIVE_TILE_UTILITY_CONST
         print(quality)
 
         saturation_theta = 2**lod / SATURATION_RESOLUTION
         saturation_dist = TILE_WIDTH / (saturation_theta * np.pi / 180)
-        saturation_quality = saturation_theta * np.log(THETA_FACTOR * SATURATION_RESOLUTION)
+        saturation_quality = saturation_theta * np.log(THETA_FACTOR * SATURATION_RESOLUTION) + params.RELATIVE_TILE_UTILITY_CONST
 
         plt.plot(distances, quality, linewidth=2)
         legend.append('size = %d Byte' % (rate))
  
-        if rate_idx <= 0:
-            plt.plot(saturation_dist, saturation_quality, marker="o", markersize=10, markeredgecolor="red", markerfacecolor="green")
-    # plt.legend(legend, fontsize=10, loc='best', ncol=1)
+        # if rate_idx <= 0:
+        #     plt.plot(saturation_dist, saturation_quality, marker="o", markersize=10, markeredgecolor="red", markerfacecolor="green")
+    plt.legend(legend, fontsize=10, loc='best', ncol=1)
     plt.xlabel('distance / m', fontsize=15, fontweight='bold')
     plt.ylabel('utility', fontsize=15, fontweight='bold')
     plt.xticks(fontsize=15)
@@ -103,12 +107,14 @@ for tile_idx in range(10):
         if SATURATION_EFFECT:
             num_points_per_degree[np.where(num_points_per_degree >= 60)] = 60
 
-        quality = theta * np.log(THETA_FACTOR * num_points_per_degree)
+        quality = theta * np.log(THETA_FACTOR * num_points_per_degree) + params.RELATIVE_TILE_UTILITY_CONST
         plt.plot(size_versions, quality, linewidth=2)
         legend.append('distance = ' + str(distance) + 'm')
     plt.legend(legend, fontsize=10, loc='best', ncol=1)
-    plt.xlabel('rate / Byte')
-    plt.ylabel('utility')
+    plt.xlabel('rate / Byte', fontsize=15, fontweight='bold')
+    plt.ylabel('utility', fontsize=15, fontweight='bold')
+    plt.xticks(fontsize=15)
+    plt.yticks(fontsize=15)
     # plt.show()
     plt.savefig("results_utility_func_explore/utility_rate" + str(tile_idx) + ".eps", bbox_inches='tight')
     plt.close()

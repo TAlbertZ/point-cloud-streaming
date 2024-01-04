@@ -66,17 +66,17 @@ class FovTraces():
             line_list = re.split('[, \t]', line)
             # line_list = re.split(',| |\t', line) # also works
             self.fov_traces.append([
-                float(line_list[1]),
-                float(line_list[2]),
-                float(line_list[3]),
+                float(line_list[1]) * params.DISTANCE_SCALER,
+                float(line_list[2]), # * params.DISTANCE_SCALER,
+                float(line_list[3]) * params.DISTANCE_SCALER,
                 float(line_list[4]),
                 float(line_list[5]),
                 float(line_list[6])
             ])
 
             line_idx += 1
-            if line_idx == num_lines:
-                break
+            # if line_idx == num_lines:
+            #     break
 
     def padding_txt(self):
         viewpoint_6dof = self.fov_traces[0].copy()

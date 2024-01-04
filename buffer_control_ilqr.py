@@ -4,12 +4,17 @@ import pdb
 import math
 import time
 import logging
+import os
+import open3d as o3d
 import matplotlib.pyplot as plt
+
+from numpy import linalg
 
 import params
 from params import Algo
 from params import ActionInitType
 from hidden_points_removal import HiddenPointsRemoval
+from occlusion import Occlusion
 if params.SCALABLE_CODING:
     from dynamics import AutoDiffDynamics
     from cost import AutoDiffCost
@@ -25,15 +30,21 @@ class Buffer():
 		buffer controlling
 		include buffer initialization and update
 	'''
-
     def __init__(self,
                  fov_traces_obj,
                  bw_traces_obj,
                  valid_tiles_obj,
                  qr_weights_obj,
+                 plot_figs_obj,
                  N,
                  max_reg=1e10,
                  hessians=False):
+
+        if params.RENDER_VIEW:
+            self.viewer = o3d.visualization.Visualizer()
+
+        if params.SAVE_TILE_LOD:
+            self.frame_lod_list = []
 
         self.logger = self.set_logger(logger_level=logging.DEBUG)
         self.logger_check_cost = self.set_logger(logger_name=__name__ +
@@ -55,11 +66,13 @@ class Buffer():
         self.min_tile_sizes = np.zeros_like(
             qr_weights_obj.rate_versions[params.NUM_RATE_VERSIONS -
                                          1])  # 300x16x16x16
+        self.num_pts_versions = qr_weights_obj.num_pts_versions
 
         self.fov_traces_obj = fov_traces_obj
         self.valid_tiles_obj = valid_tiles_obj
         self.bw_traces_obj = bw_traces_obj
         self.qr_weights_obj = qr_weights_obj
+        self.plot_figs_obj = plot_figs_obj
 
         # a, b and distance_weight are waiting to be fit
         self.tile_a = self.qr_weights_obj.qr_weights[
@@ -74,7 +87,7 @@ class Buffer():
         # tmp = np.expand_dims(self.min_rates.copy(), axis=0)
         # self.min_rates_frames = np.repeat(tmp.copy(), self.buffer_length + params.FPS * params.UPDATE_FREQ - params.TIME_GAP_BETWEEN_NOW_AND_FIRST_FRAME_TO_UPDATE * params.FPS, axis=0)
 
-        self.rate_versions = self.qr_weights_obj.rate_versions
+        self.rate_versions = self.qr_weights_obj.rate_versions  # 6x300x16x16x16
 
         # sigmoid coefficient c: (1 + exp(-c*d))^(-1)
         self.distance_weight = 1
@@ -108,9 +121,8 @@ class Buffer():
         }  # rotate around z axis
 
         # initialize bandwidth history according to '../bw_traces/100ms_loss1'
-        self.history_bandwidths = [
-            self.bw_traces_obj.bw_trace[0] * params.SCALE_BW
-        ] * params.BW_PREDICTION_HISTORY_WIN_LENGTH
+        self.history_bandwidths = [self.bw_traces_obj.bw_trace[0]
+                                   ] * params.BW_PREDICTION_HISTORY_WIN_LENGTH
 
         self.current_viewing_frame_idx = -1
 
@@ -127,7 +139,10 @@ class Buffer():
         # # r* = z_weight / lambda
         # self.typeIII_tiles_set = set()
         self.frame_quality = []
+        self.frame_quality_per_degree_list = []
         self.frame_quality_var = []
+        self.ang_resol_list = []
+        self.frame_num_points_list = []
         self.plot_bw_trace = []
         self.plot_predicted_bw_trace = []
         self.buffer_size_trace = []
@@ -165,8 +180,8 @@ class Buffer():
             overlap_ratio_hist_len = self.buffer_length + params.FPS * params.UPDATE_FREQ - params.TIME_GAP_BETWEEN_NOW_AND_FIRST_FRAME_TO_UPDATE * params.FPS
         for frame_idx in range(overlap_ratio_hist_len):
             self.overlap_ratio_history.append([])
-            for _ in range(params.OVERLAP_RATIO_HISTORY_WIN_LENGTH):
-                self.overlap_ratio_history[frame_idx].append(1.0)
+            # for _ in range(params.OVERLAP_RATIO_HISTORY_WIN_LENGTH):
+            #     self.overlap_ratio_history[frame_idx].append(1.0)
 
         self.bw_predict_accuracy_trace = []
         self.success_download_rate_trace = []
@@ -183,6 +198,14 @@ class Buffer():
 
         self.mean_size_over_tiles_per_fov = []
         self.effective_rate = []
+        self.wasted_rate = []
+        self.visible_rate = []
+        self.wasted_ratio = []
+
+        self.fov_front_accuracy_list = []
+        self.fov_end_accuracy_list = []
+        self.fov_middle_accuracy_list = []
+        self.fov_mean_accuracy_list = []
 
         self.start_time = 0
 
@@ -270,6 +293,7 @@ class Buffer():
             z_list.append(tile_center_coordinate[2])
 
         origin = [np.mean(x_list), 0, np.mean(z_list)]
+        # pdb.set_trace()
         return origin
 
     def initialize_buffer(self):
@@ -289,9 +313,9 @@ class Buffer():
             # 	self.buffer[frame_idx][valid_tiles_coordinates] = params.MAX_TILE_SIZE
 
     def true_frame_quality_sum_and_var(self, viewing_probability, distances,
-                                       frame_idx_within_video):
+                                       frame_idx_within_video, frame_idx):
         if self.current_viewing_frame_idx + 1 < params.TARGET_LATENCY:
-            return 0, 0
+            return 0, 0, 0, 0, 0
         tiles_byte_sizes = self.buffer[0]  # front of buffer: cubic array
 
         ### quantize / quantization #######
@@ -329,7 +353,7 @@ class Buffer():
         # are those contributing toward quality
         mask_downloaded_tiles = np.zeros_like(tiles_byte_sizes)
         mask_downloaded_tiles[tiles_byte_sizes.nonzero()] = 1
-        mask_visible_tiles = mask_downloaded_tiles * viewing_probability
+        # mask_visible_tiles = mask_downloaded_tiles * viewing_probability
         mask_visible_tiles = viewing_probability.copy()
         visible_tiles_pos = mask_visible_tiles.nonzero()
         total_visible_size = np.sum(tiles_byte_sizes[visible_tiles_pos])
@@ -347,32 +371,118 @@ class Buffer():
         # num_points_per_degree = num_points**0.5 / theta_of_interest  # f_ang
         lod = a_tiles_of_interest * np.log(b_tiles_of_interest *
                                            tiles_rates_to_be_watched + 1)
+        if params.ALGO == Algo.ILQR or params.RENDER_VIEW:
+            lod[lod > params.
+                TILE_DENSITY_LEVELS[-1]] = params.TILE_DENSITY_LEVELS[-1]
+            lod[lod < 0] = 0
+
         num_points_per_degree = 2**lod / theta_of_interest
+        # if params.ALGO == Algo.RUMA_SCALABLE:
+        #     lod = np.floor(lod)
+        #     lod[np.where(lod < params.TILE_DENSITY_LEVELS[0])] = 0
+        #     lod[np.where(lod > params.TILE_DENSITY_LEVELS[-1])] = params.TILE_DENSITY_LEVELS[-1]
+        #     num_pts = np.zeros_like(lod)
+        #     zero_lod_pos = np.where(lod==0)
+        #     if lod == 0:
+        #         num_pts = 1
+        #     else:
+        #         num_pts = self.num_pts_versions[params.NUM_RATE_VERSIONS - 1 - params.TILE_DENSITY_LEVELS.index(lod)][frame_idx_within_video][visible_tiles_pos]
+        #     num_points_per_degree = num_pts / theta_of_interest
         # quality_tiles = self.cost.get_quality_for_tiles(
         #     num_points_per_degree)  # update quality_tiles
         quality_tiles = theta_of_interest * np.log(
-            params.QR_MODEL_LOG_FACTOR * num_points_per_degree)
+            params.QR_MODEL_LOG_FACTOR *
+            num_points_per_degree) + params.RELATIVE_TILE_UTILITY_CONST
 
         quality_tiles_in_mat = np.zeros_like(tiles_byte_sizes)
         quality_tiles_in_mat[visible_tiles_pos] = quality_tiles
 
-        if params.SHOW_ANGULAR_RESOL:
-            if params.WEIGHTED_AVERAGE_ANG_RESOL:
-                # num_points_per_degree[np.where(lod==0)] = 0
-                frame_quality = np.sum(
-                    num_points_per_degree * theta_of_interest) / np.sum(
-                        params.TILE_SIDE_LEN /
-                        distances[viewing_probability.nonzero()] *
-                        params.RADIAN_TO_DEGREE)
-                # frame_quality = np.sum(num_points_per_degree * theta_of_interest) / np.sum(theta_of_interest)
-                # frame_quality = np.sum(num_points_per_degree * theta_of_interest)
-            else:
-                frame_quality = np.sum(num_points_per_degree)
-        else:
-            frame_quality = np.sum(quality_tiles)
+        # num_points_per_degree[np.where(lod==0)] = 0
+        ang_resol = np.sum(num_points_per_degree * theta_of_interest) / np.sum(
+            params.TILE_SIDE_LEN / distances[viewing_probability.nonzero()] *
+            params.RADIAN_TO_DEGREE)
+        # ang_resol = np.sum(num_points_per_degree * theta_of_interest) / np.sum(theta_of_interest)
+        # ang_resol = np.sum(num_points_per_degree * theta_of_interest)
+        frame_num_points = np.sum(num_points_per_degree * theta_of_interest)
+
+        frame_quality = np.sum(quality_tiles)
+        frame_quality_per_degree = frame_quality / np.sum(
+            params.TILE_SIDE_LEN / distances[viewing_probability.nonzero()] *
+            params.RADIAN_TO_DEGREE)
 
         # if frame_idx_within_video > 200:
         #     pdb.set_trace()
+
+        # if frame_idx == 1470:
+        #     pdb.set_trace()
+        # if frame_idx == 800:
+        #     pdb.set_trace()
+        # if frame_idx == 2373:
+        #     pdb.set_trace()
+
+        if params.SAVE_TILE_LOD:
+            tile_info_list = []
+            for tile_idx in range(len(visible_tiles_pos[0])):
+                x = visible_tiles_pos[0][tile_idx]
+                y = visible_tiles_pos[1][tile_idx]
+                z = visible_tiles_pos[2][tile_idx]
+                lod_tile = lod[tile_idx]
+                if lod_tile > 0 and lod_tile < 2:
+                    lod_tile = 2
+                lod_tile = int(np.round_(lod_tile))
+                if params.LOSS_LESS_VERSION and params.FOV_ORACLE_KNOW:
+                    lod_tile = params.TILE_DENSITY_LEVELS[-1]
+
+                tile_info = {'x': x, 'y': y, 'z': z, 'lod': lod_tile}
+                tile_info_list.append(tile_info)
+            self.frame_lod_list.append(tile_info_list)
+
+        ###### open3d render #########
+        if params.RENDER_VIEW:
+            self.viewer = o3d.visualization.Visualizer()
+            self.viewer.create_window(visible=True)
+
+            for tile_idx in range(len(visible_tiles_pos[0])):
+                x = visible_tiles_pos[0][tile_idx]
+                y = visible_tiles_pos[1][tile_idx]
+                z = visible_tiles_pos[2][tile_idx]
+                lod_tile = lod[tile_idx]
+                if lod_tile > 0 and lod_tile < 2:
+                    lod_tile = 2
+                lod_tile = int(np.round_(lod_tile))
+                if params.LOSS_LESS_VERSION and params.FOV_ORACLE_KNOW:
+                    lod_tile = params.TILE_DENSITY_LEVELS[-1]
+                tile_ply_filename = params.VIDEO_NAME + '_' + str(
+                    frame_idx_within_video +
+                    params.FRAME_IDX_BIAS) + '_' + str(x // 10) + str(
+                        x % 10) + '_' + str(y // 10) + str(y % 10) + '_' + str(
+                            z // 10) + str(
+                                z % 10) + '_' + str(lod_tile +
+                                                    params.LOD_BIAS) + '.ply'
+                tile_ply_filename = os.path.join(
+                    os.path.abspath(params.PLY_PATH),
+                    str(frame_idx_within_video + params.FRAME_IDX_BIAS),
+                    tile_ply_filename)
+                point_cloud_obj = o3d.io.read_point_cloud(
+                    tile_ply_filename,
+                    format='ply',
+                    remove_nan_points=True,
+                    remove_infinite_points=True,
+                    print_progress=False)
+                self.viewer.add_geometry(point_cloud_obj)
+                self.viewer.update_geometry(point_cloud_obj)
+                # pdb.set_trace()
+
+            self.viewer.poll_events()
+
+            self.viewer.update_renderer()
+            self.viewer.run()
+            pdb.set_trace()
+            frame_render_image_filename = str(frame_idx) + '.png'
+            save_path = os.path.join(self.plot_figs_obj.render_directory,
+                                     frame_render_image_filename)
+            self.viewer.capture_screen_image(save_path, do_render=True)
+            self.viewer.destroy_window()
 
         ################# frame_quality_var ##########################
         mask_prev_pop_frame = np.zeros_like(self.tilesizes_prev_pop_frame)
@@ -402,6 +512,23 @@ class Buffer():
         else:
             self.effective_rate.append(total_visible_size /
                                        np.sum(tiles_byte_sizes))
+        self.wasted_rate.append(np.sum(tiles_byte_sizes) - total_visible_size)
+        self.visible_rate.append(total_visible_size)
+        if np.sum(tiles_byte_sizes) == 0:
+            self.wasted_ratio.append(0)
+        else:
+            self.wasted_ratio.append(
+                (np.sum(tiles_byte_sizes) - total_visible_size) /
+                np.sum(tiles_byte_sizes))
+
+        if frame_idx == params.FRAME_IDX_OF_INTEREST:
+            self.logger.debug('tiles rates--- %s (Byte)',
+                              tiles_rates_to_be_watched)
+            self.logger.debug('lod--- %s', lod)
+            self.logger.debug('# points--- %s', 2**lod)
+            self.logger.debug('wasted rates--- %f', self.wasted_rate[-1])
+            self.logger.debug('effective ratio--- %f', self.effective_rate[-1])
+            # pdb.set_trace()
 
         # # return 0 if np.sum(z_weights) == 0 else frame_quality / np.sum(z_weights)
         # if total_span_degree == 0:
@@ -410,7 +537,7 @@ class Buffer():
         #     frame_quality_per_degree = frame_quality / total_span_degree
         # pdb.set_trace()
 
-        return frame_quality, frame_quality_var
+        return frame_quality, frame_quality_var, ang_resol, frame_num_points, frame_quality_per_degree
 
     def emit_buffer(self):
         '''
@@ -425,6 +552,7 @@ class Buffer():
                 self.current_viewing_frame_idx + 1,
                 self.current_viewing_frame_idx +
                 params.FPS * params.UPDATE_FREQ + 1):
+
             frame_idx_within_video = (
                 frame_idx - params.TARGET_LATENCY) % params.NUM_FRAMES
             current_visible_tiles_set = set()
@@ -443,7 +571,7 @@ class Buffer():
             # 			 "yaw":[350.8206],
             # 			 "roll":[359.9912]}
 
-            viewing_probability, distances = self.calculate_probability_to_be_viewed(
+            viewing_probability, distances, true_viewing_probability = self.calculate_probability_to_be_viewed(
                 viewpoint, frame_idx, frame_idx, emitting_buffer=True)
             # z_weights = self.calculate_z(viewing_probability, distances, frame_idx, frame_idx, evaluation_flag=True)
 
@@ -473,10 +601,14 @@ class Buffer():
             # 	print(self.num_valid_tiles_per_frame[-1], self.num_intersect_visible_tiles_trace[-1], self.num_intersect_visible_tiles_trace[-1] / self.num_valid_tiles_per_frame[-1] * 100)
             # pdb.set_trace()
 
-            true_frame_quality, true_frame_quality_var = self.true_frame_quality_sum_and_var(
-                viewing_probability[0], distances[0], frame_idx_within_video)
+            true_frame_quality, true_frame_quality_var, ang_resol, frame_num_points, frame_quality_per_degree = self.true_frame_quality_sum_and_var(
+                viewing_probability[0], distances[0], frame_idx_within_video,
+                frame_idx)
             self.frame_quality.append(true_frame_quality)
             self.frame_quality_var.append(true_frame_quality_var)
+            self.ang_resol_list.append(ang_resol)
+            self.frame_num_points_list.append(frame_num_points)
+            self.frame_quality_per_degree_list.append(frame_quality_per_degree)
 
             # if true_quality < 7.4 and self.update_step > 10:
             # 	print(frame_idx)
@@ -503,6 +635,29 @@ class Buffer():
                 if self.update_step > params.BUFFER_LENGTH // (
                         params.UPDATE_FREQ * params.FPS):
                     self.history_viewpoints[key].append(viewpoint_dof)
+
+            # fov accuracy lists
+            if frame_idx >= params.BUFFER_LENGTH and params.SAVE_FOV_ACCURACY_PER_FRAME:
+                # pdb.set_trace()
+                front_idx = frame_idx - self.current_viewing_frame_idx - 1
+                end_idx = front_idx + params.BUFFER_LENGTH - params.FPS
+                middle_idx = int(params.BUFFER_LENGTH / params.FPS // 2 *
+                                 params.FPS + front_idx)
+                self.fov_front_accuracy_list.append(
+                    self.overlap_ratio_history[front_idx][0])
+                self.fov_end_accuracy_list.append(
+                    self.overlap_ratio_history[end_idx][0])
+                self.fov_middle_accuracy_list.append(
+                    self.overlap_ratio_history[middle_idx][0])
+
+                fov_accuracy_cur_fr = []
+                for buf_pos in range(front_idx, params.BUFFER_LENGTH,
+                                     params.FPS):
+                    fov_accuracy_cur_fr.append(
+                        self.overlap_ratio_history[buf_pos][0])
+                    self.overlap_ratio_history[buf_pos].pop(0)
+                self.fov_mean_accuracy_list.append(
+                    np.mean(fov_accuracy_cur_fr))
 
         # update current_viewing_frame_idx, history_bandwidths, current_bandwidth_idx
         self.current_viewing_frame_idx = frame_idx
@@ -568,20 +723,11 @@ class Buffer():
                      time.time() - self.start_time)
         #################################################################
 
-        viewing_probability, distances = self.calculate_probability_to_be_viewed(
+        viewing_probability, distances, true_viewing_probability = self.calculate_probability_to_be_viewed(
             predicted_viewpoints, update_start_idx, update_end_idx)
 
         logging.info("viewing_probability--- %f seconds ---",
                      time.time() - self.start_time)
-
-        # calculate distance only for viewable valid tiles
-        # distances = self.calculate_distance(predicted_viewpoints)
-        if params.ALGO != Algo.ILQR:
-            z_weights = self.calculate_z(viewing_probability, distances,
-                                         update_start_idx, update_end_idx)
-
-            logging.info("calculate_z--- %f seconds ---",
-                         time.time() - self.start_time)
 
         # predict bandwidth of future 1s
         predicted_bandwidth_budget = self.predict_bandwidth(
@@ -589,6 +735,28 @@ class Buffer():
 
         logging.info("predict_bandwidth--- %f seconds ---",
                      time.time() - self.start_time)
+
+        # calculate distance only for viewable valid tiles
+        # distances = self.calculate_distance(predicted_viewpoints)
+        if params.ALGO in (Algo.KKT, Algo.RUMA_SCALABLE):
+            z_weights = self.calculate_z(viewing_probability,
+                                         np.array(distances), update_start_idx,
+                                         update_end_idx,
+                                         predicted_bandwidth_budget)
+
+            logging.info("calculate_z--- %f seconds ---",
+                         time.time() - self.start_time)
+
+        elif params.ALGO == Algo.ILQR:
+            z_weights = self.calculate_z(
+                viewing_probability[:params.BUFFER_LENGTH],
+                np.array(distances[:params.BUFFER_LENGTH]), update_start_idx,
+                update_end_idx, predicted_bandwidth_budget)
+
+            logging.info("calculate_z--- %f seconds ---",
+                         time.time() - self.start_time)
+        else:
+            pass
 
         if params.ALGO == Algo.MMSYS_HYBRID_TILING:
             tiles_rate_solution, buffered_tiles_sizes, sum_solution_rate, sum_r0, sorted_z_weights = self.hybrid_tiling(
@@ -606,13 +774,24 @@ class Buffer():
                 predicted_bandwidth_budget * params.Mbps_TO_Bps,
                 update_start_idx, update_end_idx)
         elif params.ALGO == Algo.ILQR:
-            tiles_rate_solution, buffered_tiles_sizes, sum_solution_rate, sum_r0 = self.iterate_LQR(
-                distances,
+            if self.update_step <= params.BUFFER_LENGTH // params.FPS:
+                tiles_rate_solution, buffered_tiles_sizes, sum_solution_rate, sum_r0, sorted_z_weights = self.kkt(
+                    np.array(z_weights),
+                    predicted_bandwidth_budget[0] * params.Mbps_TO_Bps,
+                    update_start_idx, update_end_idx)
+            else:
+                tiles_rate_solution, buffered_tiles_sizes, sum_solution_rate, sum_r0 = self.iterate_LQR(
+                    distances,
+                    viewing_probability,
+                    predicted_bandwidth_budget * params.Mbps_TO_Bps,
+                    update_start_idx,
+                    update_end_idx,
+                    n_iterations=params.NUM_LQR_ITERATIONS)
+        elif params.ALGO == Algo.AVERAGE:
+            tiles_rate_solution, buffered_tiles_sizes, sum_solution_rate, sum_r0 = self._average(
                 viewing_probability,
                 predicted_bandwidth_budget * params.Mbps_TO_Bps,
-                update_start_idx,
-                update_end_idx,
-                n_iterations=params.NUM_LQR_ITERATIONS)
+                update_start_idx, update_end_idx)
         else:
             pass
 
@@ -620,6 +799,9 @@ class Buffer():
             logging.info("kkt--- %f seconds ---",
                          time.time() - self.start_time)
         elif params.ALGO == Algo.ILQR:
+            logging.info("ilqr--- %f seconds ---",
+                         time.time() - self.start_time)
+        elif params.ALGO == Algo.RUMA_SCALABLE:
             logging.info("ilqr--- %f seconds ---",
                          time.time() - self.start_time)
         else:
@@ -640,10 +822,10 @@ class Buffer():
         else:
             consumed_bandwidth = sum_solution_rate
 
-        if params.USING_RUMA and params.RUMA_SCALABLE_CODING == False:
-            locs = np.where(tiles_rate_solution > buffered_tiles_sizes)
-            # pdb.set_trace()
-            consumed_bandwidth = np.sum(tiles_rate_solution[locs])
+        # if params.USING_RUMA and params.RUMA_SCALABLE_CODING == False:
+        #     locs = np.where(tiles_rate_solution > buffered_tiles_sizes)
+        #     # pdb.set_trace()
+        #     consumed_bandwidth = np.sum(tiles_rate_solution[locs])
         if consumed_bandwidth != 0:
             success_download_rate = min(
                 1, true_bandwidth_budget * params.Mbps_TO_Bps /
@@ -654,37 +836,41 @@ class Buffer():
         if params.ALGO != Algo.ILQR:
             if success_download_rate < 1 - 1e-4:  # 1e-4 is noise error term
                 print("success download rate:", success_download_rate)
-                pdb.set_trace()
-                # tiles_rate_solution = (tiles_rate_solution - buffered_tiles_sizes) * success_download_rate + buffered_tiles_sizes
-                download_end_bool = False
-                new_consumed_bandwidth = 0
+                # pdb.set_trace()
+                tiles_rate_solution = (
+                    tiles_rate_solution - buffered_tiles_sizes[
+                        (params.BUFFER_LENGTH - tiles_rate_solution.shape[0]):]
+                ) * success_download_rate + buffered_tiles_sizes[
+                    (params.BUFFER_LENGTH - tiles_rate_solution.shape[0]):]
+                # download_end_bool = False
+                # new_consumed_bandwidth = 0
 
-                # higher z_weight has higher priority to be download / fetched
-                for z_weight_idx in range(len(sorted_z_weights)):
-                    z_weight_loc = sorted_z_weights[z_weight_idx]
-                    frame_idx = z_weight_loc["frame_idx"]
-                    x = z_weight_loc["x"]
-                    y = z_weight_loc["y"]
-                    z = z_weight_loc["z"]
+                # # higher z_weight has higher priority to be download / fetched
+                # for z_weight_idx in range(len(sorted_z_weights)):
+                #     z_weight_loc = sorted_z_weights[z_weight_idx]
+                #     frame_idx = z_weight_loc["frame_idx"]
+                #     x = z_weight_loc["x"]
+                #     y = z_weight_loc["y"]
+                #     z = z_weight_loc["z"]
 
-                    if download_end_bool:  # already consumed as much bandwidth as possible
-                        tiles_rate_solution[frame_idx][x][y][
-                            z] = buffered_tiles_sizes[frame_idx][x][y][z]
+                #     if download_end_bool:  # already consumed as much bandwidth as possible
+                #         tiles_rate_solution[frame_idx][x][y][
+                #             z] = buffered_tiles_sizes[frame_idx][x][y][z]
 
-                    download_size = tiles_rate_solution[frame_idx][x][y][
-                        z] - buffered_tiles_sizes[frame_idx][x][y][z]
-                    if params.USING_RUMA and params.RUMA_SCALABLE_CODING == False:
-                        download_size = tiles_rate_solution[frame_idx][x][y][
-                            z] if download_size != 0 else 0
-                    new_consumed_bandwidth += download_size
-                    if new_consumed_bandwidth > true_bandwidth_budget * params.Mbps_TO_Bps:  # cannot download more
-                        new_consumed_bandwidth -= download_size
-                        tiles_rate_solution[frame_idx][x][y][
-                            z] = buffered_tiles_sizes[frame_idx][x][y][z]
-                        download_end_bool = True
-                        # break
+                #     download_size = tiles_rate_solution[frame_idx][x][y][
+                #         z] - buffered_tiles_sizes[frame_idx][x][y][z]
+                #     if params.USING_RUMA and params.RUMA_SCALABLE_CODING == False:
+                #         download_size = tiles_rate_solution[frame_idx][x][y][
+                #             z] if download_size != 0 else 0
+                #     new_consumed_bandwidth += download_size
+                #     if new_consumed_bandwidth > true_bandwidth_budget * params.Mbps_TO_Bps:  # cannot download more
+                #         new_consumed_bandwidth -= download_size
+                #         tiles_rate_solution[frame_idx][x][y][
+                #             z] = buffered_tiles_sizes[frame_idx][x][y][z]
+                #         download_end_bool = True
+                #         # break
 
-                success_download_rate = new_consumed_bandwidth / consumed_bandwidth
+                # success_download_rate = new_consumed_bandwidth / consumed_bandwidth
                 # if params.USING_RUMA and params.RUMA_SCALABLE_CODING == False:
                 # 	locs = np.where(tiles_rate_solution > buffered_tiles_sizes)
                 # 	success_download_rate = new_consumed_bandwidth / consumed_bandwidth
@@ -695,9 +881,45 @@ class Buffer():
                      time.time() - self.start_time)
 
         for frame_idx in range(update_start_idx, update_end_idx + 1):
+            # see how the tiles's rate of one frame evlolves over time
+            if frame_idx == params.FRAME_IDX_OF_INTEREST:
+                frame_idx_within_video = (
+                    frame_idx - params.TARGET_LATENCY) % params.NUM_FRAMES
+                tiles_pos = tiles_rate_solution[frame_idx -
+                                                update_start_idx].nonzero()
+                a_tiles_of_interest = self.tile_a[frame_idx_within_video][
+                    tiles_pos]
+                b_tiles_of_interest = self.tile_b[frame_idx_within_video][
+                    tiles_pos]
+                prev_tiles_rates_to_be_watched = self.buffer[
+                    frame_idx - self.current_viewing_frame_idx - 1][tiles_pos]
+                tiles_rates_to_be_watched = tiles_rate_solution[
+                    frame_idx - update_start_idx][tiles_pos]
+                prev_lod = a_tiles_of_interest * np.log(
+                    b_tiles_of_interest * prev_tiles_rates_to_be_watched + 1)
+                lod = a_tiles_of_interest * np.log(
+                    b_tiles_of_interest * tiles_rates_to_be_watched + 1)
+                prev_num_points = 2**prev_lod
+                num_points = 2**lod
+                # quality_tiles = theta_of_interest * np.log(
+                #     params.QR_MODEL_LOG_FACTOR * num_points_per_degree)
+
+                self.logger.debug('tiles rates--- %s (Byte)',
+                                  tiles_rates_to_be_watched)
+                self.logger.debug(
+                    'delta rates--- %s (Byte)',
+                    tiles_rates_to_be_watched - prev_tiles_rates_to_be_watched)
+                self.logger.debug('lod--- %s', lod)
+                self.logger.debug('delta lod--- %s', lod - prev_lod)
+                self.logger.debug('# points--- %s', num_points)
+                self.logger.debug('delta points--- %s',
+                                  num_points - prev_num_points)
+                # pdb.set_trace()
+
             self.buffer[frame_idx - self.current_viewing_frame_idx -
                         1] = tiles_rate_solution[frame_idx -
                                                  update_start_idx].copy()
+
         self.plot_bw_trace.append(true_bandwidth_budget)  # Mbps
         self.plot_predicted_bw_trace.append(predicted_bandwidth_budget)  # Mbps
         self.buffer_size_trace.append(sum_solution_rate)  # byte
@@ -708,6 +930,33 @@ class Buffer():
                                               true_bandwidth_budget)  # Mbps
         # pdb.set_trace()
 
+        ########### see how much bw is wasted for each frame/segment due to fov error ###########
+        viewing_probability = np.array(viewing_probability)
+        true_viewing_probability = np.array(true_viewing_probability)
+        wasted_tiles = viewing_probability - true_viewing_probability * viewing_probability
+        # wasted bw per tile
+        # pdb.set_trace()
+        wasted_bw_per_tile = (tiles_rate_solution - buffered_tiles_sizes[
+            (params.BUFFER_LENGTH - tiles_rate_solution.shape[0]):]
+                              ) * wasted_tiles[:params.BUFFER_LENGTH]
+        # wasted bw per frame
+        wasted_bw_per_fr = wasted_bw_per_tile.sum(
+            axis=tuple(range(1, wasted_bw_per_tile.ndim)))
+        # wasted bw per segment
+        wasted_bw_per_seg = np.add.reduceat(
+            wasted_bw_per_fr,
+            np.arange(0, len(wasted_bw_per_fr),
+                      params.FPS))  # shape: (latency in sec, )
+        self.logger.debug('Wasted BW per segment: %s', wasted_bw_per_seg)
+        self.logger.debug('ratio to consumed BW: %s',
+                          wasted_bw_per_seg / consumed_bandwidth)
+
+        wasted_bw_cur_step = np.sum(wasted_bw_per_seg)
+        self.logger.debug('Wasted BW this step: %f, ratio to consumed BW: %f',
+                          wasted_bw_cur_step,
+                          wasted_bw_cur_step / consumed_bandwidth)
+        # pdb.set_trace()
+
         logging.info("update buffer ends--- %f seconds ---",
                      time.time() - self.start_time)
 
@@ -716,6 +965,7 @@ class Buffer():
                     distances,
                     update_start_idx,
                     update_end_idx,
+                    bw_budget,
                     evaluation_flag=False):
         '''
             also need self.frame_weights, self.tile_a and self.distance_weight
@@ -733,6 +983,23 @@ class Buffer():
         for _ in range((params.TARGET_LATENCY - 1) // params.NUM_FRAMES):
             a_updated_tiles = np.concatenate(
                 (a_updated_tiles, a_updated_tiles_core), axis=0)
+
+        if params.HOMO_TILES:
+            # for i in range(a_updated_tiles.shape[0]):
+            #     valid_idx = a_updated_tiles[i].nonzero()
+            #     a_updated_tiles[i][valid_idx] = np.sum(a_updated_tiles[i]) / len(valid_idx[0])
+            valid_idx = a_updated_tiles.nonzero()
+            a_updated_tiles[valid_idx] = np.sum(a_updated_tiles) / len(
+                valid_idx[0])
+            a_updated_tiles[valid_idx] = 1
+
+        if params.UNIFORM_DISTANCE:
+            # for i in range(len(distances)):
+            #     valid_idx = distances[i].nonzero()
+            #     distances[i][valid_idx] = np.sum(distances[i]) / len(valid_idx[0])
+            valid_idx = distances.nonzero()
+            distances[valid_idx] = np.sum(distances) / len(valid_idx[0])
+            distances[valid_idx] = 2
 
         # if evaluation_flag:
         #     z_weights.append(
@@ -765,17 +1032,45 @@ class Buffer():
             # based on fov prediction accuracy: overlap ratio
             elif params.FRAME_WEIGHT_TYPE == params.FrameWeightType.FOV_PRED_ACCURACY:
                 frame_weight = np.mean(
-                    self.overlap_ratio_history[frame_idx - update_start_idx])
+                    self.overlap_ratio_history[frame_idx - update_start_idx]
+                    [-params.OVERLAP_RATIO_HISTORY_WIN_LENGTH:])
+                # overlap ratio with fov oracle
+                frame_weight = np.exp(
+                    self.overlap_ratio_history[frame_idx -
+                                               update_start_idx][-1])
+                frame_weight = self.overlap_ratio_history[frame_idx -
+                                                          update_start_idx][-1]
+            elif params.FRAME_WEIGHT_TYPE == params.FrameWeightType.DYNAMIC:
+                # frame_weight = np.mean(
+                #     self.overlap_ratio_history[frame_idx - update_start_idx])
+                # overlap ratio with fov oracle
+                frame_weight = self.overlap_ratio_history[frame_idx -
+                                                          update_start_idx][-1]
+                # frame_weight = np.exp(self.overlap_ratio_history[frame_idx - update_start_idx][-1])
+                patch_win_len = bw_budget / params.FRAME_WEIGHT_DYNAMIC_BW_REF * params.FRAME_WEIGHT_DYNAMIC_WINLEN_REF  # type: float
+                # patch_win_len = 300
+                if self.update_step > params.TARGET_LATENCY // params.FPS:
+                    if frame_idx - update_start_idx >= patch_win_len:
+                        frame_weight = 0
             elif params.FRAME_WEIGHT_TYPE == params.FrameWeightType.STEP_FUNC:
-                frame_weight = 1e-3
-                if frame_idx - update_start_idx < params.FRAME_WEIGHT_STEP_IDX:
+                if self.update_step <= params.TARGET_LATENCY // params.FPS:
                     frame_weight = 1
+                else:
+                    frame_weight = 0
+                    if frame_idx - update_start_idx < params.FRAME_WEIGHT_STEP_IDX:
+                        frame_weight = 1
             elif params.FRAME_WEIGHT_TYPE == params.FrameWeightType.EXP_DECREASE:
                 frame_weight = np.power(
                     params.FRAME_WEIGHT_EXP_BOTTOM,
                     params.FRAME_WEIGHT_EXP_FACTOR *
                     (1 - (frame_idx - update_start_idx) /
                      (update_end_idx - update_start_idx)))
+
+                #### add a step window
+                # patch_win_len = 150
+                # if self.update_step > params.TARGET_LATENCY // params.FPS:
+                #     if frame_idx - update_start_idx >= patch_win_len:
+                #         frame_weight = 0
             elif params.FRAME_WEIGHT_TYPE == params.FrameWeightType.BELL_SHAPE:
                 assert (
                     params.FRAME_WEIGHT_PEAK_IDX < params.BUFFER_LENGTH // 2
@@ -812,8 +1107,17 @@ class Buffer():
             theta_of_interest = params.TILE_SIDE_LEN / distances[
                 frame_idx -
                 update_start_idx][valid_locs] * params.RADIAN_TO_DEGREE
-            z_weights[frame_idx - update_start_idx][valid_locs] = frame_weight * viewing_probability[frame_idx - update_start_idx][valid_locs] \
-                          * a_updated_tiles[frame_idx - update_start_idx][valid_locs] * np.log(2) * theta_of_interest
+
+            if params.ALGO == Algo.RUMA_SCALABLE:
+                z_weights[frame_idx - update_start_idx][valid_locs] = 1
+                continue
+            if params.DISTANCE_BASED_UTILITY:
+                z_weights[frame_idx - update_start_idx][valid_locs] = frame_weight * viewing_probability[frame_idx - update_start_idx][valid_locs] \
+                              * a_updated_tiles[frame_idx - update_start_idx][valid_locs] * np.log(2) * theta_of_interest
+            else:
+                z_weights[
+                    frame_idx -
+                    update_start_idx][valid_locs] = frame_weight  # q=log(r+1)
 
             # for x in range(params.NUM_TILES_PER_SIDE_IN_A_FRAME):
             # 	for y in range(params.NUM_TILES_PER_SIDE_IN_A_FRAME):
@@ -840,196 +1144,221 @@ class Buffer():
                                            emitting_buffer=False):
         # probability can be represented by overlap ratio
 
-        # HPR
-        viewing_probability = []
-        distances = []
-
         if params.ALGO == Algo.ILQR and emitting_buffer == False:
             update_end_idx += (params.ILQR_HORIZON - 1) * params.FPS
 
-        for frame_idx in range(update_start_idx, update_end_idx + 1):
-            viewing_probability.append(
-                np.zeros((params.NUM_TILES_PER_SIDE_IN_A_FRAME,
-                          params.NUM_TILES_PER_SIDE_IN_A_FRAME,
-                          params.NUM_TILES_PER_SIDE_IN_A_FRAME)))
-            distances.append(
-                np.zeros((params.NUM_TILES_PER_SIDE_IN_A_FRAME,
-                          params.NUM_TILES_PER_SIDE_IN_A_FRAME,
-                          params.NUM_TILES_PER_SIDE_IN_A_FRAME)))
-            tile_center_points = []
-            viewpoint = {
-                "x": 0,
-                'y': 0,
-                "z": 0,
-                "pitch": 0,
-                "yaw": 0,
-                "roll": 0
-            }
-            for key in viewpoint.keys():
-                viewpoint[key] = viewpoints[key][frame_idx - update_start_idx]
+        # # HPR
+        # viewing_probability = []
+        # true_viewing_probability = []
+        # distances = []
 
-            if frame_idx < params.BUFFER_LENGTH:
-                continue
-            valid_tiles = self.valid_tiles_obj.valid_tiles[
-                (frame_idx - params.BUFFER_LENGTH) % params.
-                NUM_FRAMES]  # cubic array denotes whether a tile is empty or not
+        # if params.ALGO == Algo.ILQR and emitting_buffer == False:
+        #     update_end_idx += (params.ILQR_HORIZON - 1) * params.FPS
 
-            ### fixed / constant obj ############
-            # valid_tiles = self.valid_tiles_obj.valid_tiles[0]
-            #####################################
+        # for frame_idx in range(update_start_idx, update_end_idx + 1):
+        #     viewing_probability.append(
+        #         np.zeros((params.NUM_TILES_PER_SIDE_IN_A_FRAME,
+        #                   params.NUM_TILES_PER_SIDE_IN_A_FRAME,
+        #                   params.NUM_TILES_PER_SIDE_IN_A_FRAME)))
+        #     true_viewing_probability.append(
+        #         np.zeros((params.NUM_TILES_PER_SIDE_IN_A_FRAME,
+        #                   params.NUM_TILES_PER_SIDE_IN_A_FRAME,
+        #                   params.NUM_TILES_PER_SIDE_IN_A_FRAME)))
+        #     distances.append(
+        #         np.zeros((params.NUM_TILES_PER_SIDE_IN_A_FRAME,
+        #                   params.NUM_TILES_PER_SIDE_IN_A_FRAME,
+        #                   params.NUM_TILES_PER_SIDE_IN_A_FRAME)))
+        #     tile_center_points = []
+        #     viewpoint = {
+        #         "x": 0,
+        #         'y': 0,
+        #         "z": 0,
+        #         "pitch": 0,
+        #         "yaw": 0,
+        #         "roll": 0
+        #     }
+        #     for key in viewpoint.keys():
+        #         viewpoint[key] = viewpoints[key][frame_idx - update_start_idx]
 
-            tile_xs, tile_ys, tile_zs = valid_tiles.nonzero()
-            for point_idx in range(len(tile_xs)):
-                tile_center_coordinate = self.valid_tiles_obj.convert_pointIdx_to_coordinate(
-                    tile_xs[point_idx], tile_ys[point_idx], tile_zs[point_idx])
-                tile_center_points.append(tile_center_coordinate)
+        #     if frame_idx < params.BUFFER_LENGTH:
+        #         continue
+        #     valid_tiles = self.valid_tiles_obj.valid_tiles[
+        #         (frame_idx - params.BUFFER_LENGTH) % params.
+        #         NUM_FRAMES]  # cubic array denotes whether a tile is empty or not
 
-            # modify object coordinate: origin at obj's bottom center
-            tile_center_points = self.valid_tiles_obj.change_tile_coordinates_origin(
-                self.origin, tile_center_points)
+        #     ### fixed / constant obj ############
+        #     # valid_tiles = self.valid_tiles_obj.valid_tiles[0]
+        #     #####################################
 
-            # mirror x and z axis to let obj face the user start view orientation
-            tile_center_points = np.array(tile_center_points)
-            tile_center_points[:, 0] = -tile_center_points[:, 0]
-            tile_center_points[:, 2] = -tile_center_points[:, 2]
+        #     tile_xs, tile_ys, tile_zs = valid_tiles.nonzero()
+        #     for point_idx in range(len(tile_xs)):
+        #         tile_center_coordinate = self.valid_tiles_obj.convert_pointIdx_to_coordinate(
+        #             tile_xs[point_idx], tile_ys[point_idx], tile_zs[point_idx])
+        #         tile_center_points.append(tile_center_coordinate)
 
-            viewpoint_position = np.array(
-                [viewpoint["x"], viewpoint["y"], viewpoint["z"]])
-            viewpoint_position = np.expand_dims(viewpoint_position, axis=0)
+        #     # modify object coordinate: origin at obj's bottom center
+        #     tile_center_points = self.valid_tiles_obj.change_tile_coordinates_origin(
+        #         self.origin, tile_center_points)
 
-            true_viewpoint = self.fov_traces_obj.fov_traces[frame_idx]
-            true_position = np.array([
-                true_viewpoint[params.MAP_6DOF_TO_HMD_DATA["x"]],
-                true_viewpoint[params.MAP_6DOF_TO_HMD_DATA["y"]],
-                true_viewpoint[params.MAP_6DOF_TO_HMD_DATA["z"]]
-            ])
-            true_position = np.expand_dims(true_position, axis=0)
-            # print(viewpoint_position)
+        #     # mirror x and z axis to let obj face the user start view orientation
+        #     tile_center_points = np.array(tile_center_points)
+        #     tile_center_points[:, 0] = -tile_center_points[:, 0]
+        #     tile_center_points[:, 2] = -tile_center_points[:, 2]
 
-            # modify object coordinate: origin at viewpoint
-            # tile_center_points = self.valid_tiles_obj.change_tile_coordinates_origin(viewpoint_position, tile_center_points)
+        #     viewpoint_position = np.array(
+        #         [viewpoint["x"], viewpoint["y"], viewpoint["z"]])
+        #     viewpoint_position = np.expand_dims(viewpoint_position, axis=0)
 
-            # HPR
-            HPR_obj = HiddenPointsRemoval(tile_center_points)
-            # # First subplot
-            # fig = plt.figure(figsize = plt.figaspect(0.5))
-            # plt.title('Test Case With A Sphere (Left) and Visible Sphere Viewed From Well Above (Right)')
-            # ax = fig.add_subplot(1,2,1, projection = '3d')
-            # ax.scatter(HPR_obj.points[:, 0], HPR_obj.points[:, 1], HPR_obj.points[:, 2], c='r', marker='^') # Plot all points
-            # ax.set_xlabel('X Axis')
-            # ax.set_ylabel('Y Axis')
-            # ax.set_zlabel('Z Axis')
-            # plt.show()
-            flippedPoints = HPR_obj.sphericalFlip(
-                viewpoint_position, math.pi
-            )  # Reflect the point cloud about a sphere centered at viewpoint_position
-            myHull = HPR_obj.convexHull(
-                flippedPoints
-            )  # Take the convex hull of the center of the sphere and the deformed point cloud
+        #     true_viewpoint = self.fov_traces_obj.fov_traces[frame_idx]
+        #     true_position = np.array([
+        #         true_viewpoint[params.MAP_6DOF_TO_HMD_DATA["x"]],
+        #         true_viewpoint[params.MAP_6DOF_TO_HMD_DATA["y"]],
+        #         true_viewpoint[params.MAP_6DOF_TO_HMD_DATA["z"]]
+        #     ])
+        #     true_position = np.expand_dims(true_position, axis=0)
+        #     # print(viewpoint_position)
 
-            true_flippedPoints = HPR_obj.sphericalFlip(
-                true_position, math.pi
-            )  # Reflect the point cloud about a sphere centered at viewpoint_position
-            true_myHull = HPR_obj.convexHull(
-                true_flippedPoints
-            )  # Take the convex hull of the center of the sphere and the deformed point cloud
+        #     # modify object coordinate: origin at viewpoint
+        #     # tile_center_points = self.valid_tiles_obj.change_tile_coordinates_origin(viewpoint_position, tile_center_points)
 
-            # ax = fig.add_subplot(1,2,2, projection = '3d')
-            # ax.scatter(flippedPoints[:, 0], flippedPoints[:, 1], flippedPoints[:, 2], c='r', marker='^') # Plot all points
-            # ax.set_xlabel('X Axis')
-            # ax.set_ylabel('Y Axis')
-            # ax.set_zlabel('Z Axis')
-            # plt.show()
+        #     # HPR
+        #     HPR_obj = HiddenPointsRemoval(tile_center_points)
+        #     # # First subplot
+        #     # fig = plt.figure(figsize = plt.figaspect(0.5))
+        #     # plt.title('Test Case With A Sphere (Left) and Visible Sphere Viewed From Well Above (Right)')
+        #     # ax = fig.add_subplot(1,2,1, projection = '3d')
+        #     # ax.scatter(HPR_obj.points[:, 0], HPR_obj.points[:, 1], HPR_obj.points[:, 2], c='r', marker='^') # Plot all points
+        #     # ax.set_xlabel('X Axis')
+        #     # ax.set_ylabel('Y Axis')
+        #     # ax.set_zlabel('Z Axis')
+        #     # plt.show()
+        #     flippedPoints = HPR_obj.sphericalFlip(
+        #         viewpoint_position, math.pi
+        #     )  # Reflect the point cloud about a sphere centered at viewpoint_position
+        #     myHull = HPR_obj.convexHull(
+        #         flippedPoints
+        #     )  # Take the convex hull of the center of the sphere and the deformed point cloud
 
-            # HPR_obj.plot(visible_hull_points=myHull)
-            # pdb.set_trace()
+        #     true_flippedPoints = HPR_obj.sphericalFlip(
+        #         true_position, math.pi
+        #     )  # Reflect the point cloud about a sphere centered at viewpoint_position
+        #     true_myHull = HPR_obj.convexHull(
+        #         true_flippedPoints
+        #     )  # Take the convex hull of the center of the sphere and the deformed point cloud
 
-            ### TODO by Tongyu: use gradient descent to optimize radius of HPR ####
+        #     # ax = fig.add_subplot(1,2,2, projection = '3d')
+        #     # ax.scatter(flippedPoints[:, 0], flippedPoints[:, 1], flippedPoints[:, 2], c='r', marker='^') # Plot all points
+        #     # ax.set_xlabel('X Axis')
+        #     # ax.set_ylabel('Y Axis')
+        #     # ax.set_zlabel('Z Axis')
+        #     # plt.show()
 
-            ###############################################################
+        #     # HPR_obj.plot(visible_hull_points=myHull)
+        #     # pdb.set_trace()
 
-            ############ check which visible points are within fov #############
-            predicted_visible_tiles_set = set()
-            for vertex in myHull.vertices[:-1]:
-                vertex_coordinate = np.array([
-                    tile_center_points[vertex, 0],
-                    tile_center_points[vertex, 1], tile_center_points[vertex,
-                                                                      2]
-                ])
-                vector_from_viewpoint_to_tilecenter = vertex_coordinate - viewpoint_position
-                pitch = viewpoint["pitch"] / params.RADIAN_TO_DEGREE
-                yaw = viewpoint["yaw"] / params.RADIAN_TO_DEGREE
-                viewing_ray_unit_vector = np.array([
-                    np.sin(yaw) * np.cos(pitch),
-                    np.sin(pitch),
-                    np.cos(yaw) * np.cos(pitch)
-                ])
-                intersection_angle = np.arccos(
-                    np.dot(vector_from_viewpoint_to_tilecenter,
-                           viewing_ray_unit_vector) /
-                    np.linalg.norm(vector_from_viewpoint_to_tilecenter))
-                if intersection_angle <= params.FOV_DEGREE_SPAN:
-                    # viewable => viewing probability = 1
-                    viewable_tile_idx = (tile_xs[vertex], tile_ys[vertex],
-                                         tile_zs[vertex]
-                                         )  # position among all tiles
-                    # as long as the tile is visiblle, the viewing probability is 1 (which means the overlap ratio is 100%)
-                    viewing_probability[frame_idx - update_start_idx][
-                        viewable_tile_idx[0]][viewable_tile_idx[1]][
-                            viewable_tile_idx[2]] = 1
-                    distances[frame_idx - update_start_idx][
-                        viewable_tile_idx[0]][viewable_tile_idx[1]][
-                            viewable_tile_idx[2]] = self.calculate_distance(
-                                vertex_coordinate, viewpoint_position)
+        #     ### TODO by Tongyu: use gradient descent to optimize radius of HPR ####
 
-                    predicted_visible_tiles_set.add(viewable_tile_idx)
+        #     ###############################################################
 
-            true_visible_tiles_set = set()
-            for vertex in true_myHull.vertices[:-1]:
-                vertex_coordinate = np.array([
-                    tile_center_points[vertex, 0],
-                    tile_center_points[vertex, 1], tile_center_points[vertex,
-                                                                      2]
-                ])
-                vector_from_viewpoint_to_tilecenter = vertex_coordinate - true_position
-                pitch = true_viewpoint[params.MAP_6DOF_TO_HMD_DATA[
-                    "pitch"]] / params.RADIAN_TO_DEGREE
-                yaw = true_viewpoint[params.MAP_6DOF_TO_HMD_DATA[
-                    "yaw"]] / params.RADIAN_TO_DEGREE
-                viewing_ray_unit_vector = np.array([
-                    np.sin(yaw) * np.cos(pitch),
-                    np.sin(pitch),
-                    np.cos(yaw) * np.cos(pitch)
-                ])
-                intersection_angle = np.arccos(
-                    np.dot(vector_from_viewpoint_to_tilecenter,
-                           viewing_ray_unit_vector) /
-                    np.linalg.norm(vector_from_viewpoint_to_tilecenter))
-                if intersection_angle <= params.FOV_DEGREE_SPAN:
-                    # viewable => viewing probability = 1
-                    viewable_tile_idx = (tile_xs[vertex], tile_ys[vertex],
-                                         tile_zs[vertex]
-                                         )  # position among all tiles
-                    # as long as the tile is visiblle, the viewing probability is 1 (which means the overlap ratio is 100%)
-                    # viewing_probability[frame_idx - update_start_idx][viewable_tile_idx[0]][viewable_tile_idx[1]][viewable_tile_idx[2]] = 1
-                    # distances[frame_idx - update_start_idx][viewable_tile_idx[0]][viewable_tile_idx[1]][viewable_tile_idx[2]] = self.calculate_distance(vertex_coordinate, viewpoint_position)
+        #     ############ check which visible points are within fov #############
+        #     predicted_visible_tiles_set = set()
+        #     for vertex in myHull.vertices[:-1]:
+        #         vertex_coordinate = np.array([
+        #             tile_center_points[vertex, 0],
+        #             tile_center_points[vertex, 1], tile_center_points[vertex,
+        #                                                               2]
+        #         ])
+        #         vector_from_viewpoint_to_tilecenter = vertex_coordinate - viewpoint_position
+        #         pitch = viewpoint["pitch"] / params.RADIAN_TO_DEGREE
+        #         yaw = viewpoint["yaw"] / params.RADIAN_TO_DEGREE
+        #         viewing_ray_unit_vector = np.array([
+        #             np.sin(yaw) * np.cos(pitch),
+        #             np.sin(pitch),
+        #             np.cos(yaw) * np.cos(pitch)
+        #         ])
+        #         intersection_angle = np.arccos(
+        #             np.dot(vector_from_viewpoint_to_tilecenter,
+        #                    viewing_ray_unit_vector) /
+        #             np.linalg.norm(vector_from_viewpoint_to_tilecenter))
+        #         if intersection_angle <= params.FOV_DEGREE_SPAN:
+        #             # viewable => viewing probability = 1
+        #             viewable_tile_idx = (tile_xs[vertex], tile_ys[vertex],
+        #                                  tile_zs[vertex]
+        #                                  )  # position among all tiles
+        #             # as long as the tile is visiblle, the viewing probability is 1 (which means the overlap ratio is 100%)
+        #             viewing_probability[frame_idx - update_start_idx][
+        #                 viewable_tile_idx[0]][viewable_tile_idx[1]][
+        #                     viewable_tile_idx[2]] = 1
+        #             distances[frame_idx - update_start_idx][
+        #                 viewable_tile_idx[0]][viewable_tile_idx[1]][
+        #                     viewable_tile_idx[2]] = self.calculate_distance(
+        #                         vertex_coordinate, viewpoint_position)
 
-                    true_visible_tiles_set.add(viewable_tile_idx)
+        #             predicted_visible_tiles_set.add(viewable_tile_idx)
 
-            ########################################################################
+        #     true_visible_tiles_set = set()
+        #     for vertex in true_myHull.vertices[:-1]:
+        #         vertex_coordinate = np.array([
+        #             tile_center_points[vertex, 0],
+        #             tile_center_points[vertex, 1], tile_center_points[vertex,
+        #                                                               2]
+        #         ])
+        #         vector_from_viewpoint_to_tilecenter = vertex_coordinate - true_position
+        #         pitch = true_viewpoint[params.MAP_6DOF_TO_HMD_DATA[
+        #             "pitch"]] / params.RADIAN_TO_DEGREE
+        #         yaw = true_viewpoint[params.MAP_6DOF_TO_HMD_DATA[
+        #             "yaw"]] / params.RADIAN_TO_DEGREE
+        #         viewing_ray_unit_vector = np.array([
+        #             np.sin(yaw) * np.cos(pitch),
+        #             np.sin(pitch),
+        #             np.cos(yaw) * np.cos(pitch)
+        #         ])
+        #         intersection_angle = np.arccos(
+        #             np.dot(vector_from_viewpoint_to_tilecenter,
+        #                    viewing_ray_unit_vector) /
+        #             np.linalg.norm(vector_from_viewpoint_to_tilecenter))
+        #         if intersection_angle <= params.FOV_DEGREE_SPAN:
+        #             # viewable => viewing probability = 1
+        #             viewable_tile_idx = (tile_xs[vertex], tile_ys[vertex],
+        #                                  tile_zs[vertex]
+        #                                  )  # position among all tiles
+        #             # as long as the tile is visiblle, the viewing probability is 1 (which means the overlap ratio is 100%)
+        #             # viewing_probability[frame_idx - update_start_idx][viewable_tile_idx[0]][viewable_tile_idx[1]][viewable_tile_idx[2]] = 1
+        #             # distances[frame_idx - update_start_idx][viewable_tile_idx[0]][viewable_tile_idx[1]][viewable_tile_idx[2]] = self.calculate_distance(vertex_coordinate, viewpoint_position)
+        #             true_viewing_probability[frame_idx - update_start_idx][
+        #                 viewable_tile_idx[0]][viewable_tile_idx[1]][
+        #                     viewable_tile_idx[2]] = 1
 
-            # update overlap_ratio history
-            overlap_tiles_set = true_visible_tiles_set.intersection(
-                predicted_visible_tiles_set)
-            overlap_ratio = len(overlap_tiles_set) / len(
-                true_visible_tiles_set)
-            self.overlap_ratio_history[frame_idx -
-                                       update_start_idx].append(overlap_ratio)
-            self.overlap_ratio_history[frame_idx - update_start_idx].pop(0)
-            # if overlap_ratio < 1:
-            # 	pdb.set_trace()
+        #             true_visible_tiles_set.add(viewable_tile_idx)
 
-        return viewing_probability, distances
+        #     ########################################################################
+
+        #     # update overlap_ratio history
+        #     if not emitting_buffer:
+        #         overlap_tiles_set = true_visible_tiles_set.intersection(
+        #             predicted_visible_tiles_set)
+        #         overlap_ratio = len(overlap_tiles_set) / len(
+        #             true_visible_tiles_set)
+        #         self.overlap_ratio_history[frame_idx -
+        #                                    update_start_idx].append(overlap_ratio)
+        #         if frame_idx >= params.BUFFER_LENGTH:
+        #             self.overlap_ratio_history[frame_idx - update_start_idx].pop(0)
+        #         # if overlap_ratio < 1:
+        #         # 	pdb.set_trace()
+
+        occlusion_obj = Occlusion(self.valid_tiles_obj, self.fov_traces_obj,
+                                  self.origin)
+        if emitting_buffer:
+            viewing_probability, distances, true_viewing_probability = occlusion_obj.KATZ(
+                viewpoints, update_start_idx, update_end_idx, emitting_buffer,
+                self.overlap_ratio_history)
+        else:
+            viewing_probability, distances, true_viewing_probability = occlusion_obj.KATZ(
+                viewpoints, update_start_idx, update_end_idx, emitting_buffer,
+                self.overlap_ratio_history)
+
+        return viewing_probability, list(np.array(distances) *
+                                         1), true_viewing_probability
 
     def calculate_distance(self, point1, point2):
         distance = np.linalg.norm(point1 - point2)
@@ -1047,15 +1376,17 @@ class Buffer():
                                                   self.history_bandwidths)
         return bandwidth
 
-    def calculate_unweighted_tile_quality(self, rate, distance, a, b):
+    def calculate_unweighted_tile_quality(self, rate, distance, num_pts):
         if rate == 0:
             return 0
-        tmp = a * rate + b
-        assert (
-            tmp > 0
-        ), "!!!! RUMA->calculate_unweighted_tile_quality->rate is too small !!!!!!!!!"
-        return np.log(distance / params.TILE_SIDE_LEN * np.power(tmp, 0.5) /
-                      params.RADIAN_TO_DEGREE)
+        # tmp = a * rate + b
+        # assert (
+        #     tmp > 0
+        # ), "!!!! RUMA->calculate_unweighted_tile_quality->rate is too small !!!!!!!!!"
+
+        # return np.log(distance / params.TILE_SIDE_LEN * np.power(tmp, 0.5) /
+        #               params.RADIAN_TO_DEGREE)
+        return num_pts * np.log(rate)
 
     def _control(self,
                  xs,
@@ -1314,8 +1645,8 @@ class Buffer():
                 # else:
                 #     pass
                 ######################################
-                # us[i] = np.random.uniform(0.1, 1, (len(xs[i]), ))
-                us[i] = np.full(len(xs[i], ), 1e-3)
+                us[i] = np.random.uniform(0.1, 1, (len(xs[i]), ))
+                # us[i] = np.full(len(xs[i], ), 1e-3)
 
             u = us[i]
 
@@ -1438,6 +1769,7 @@ class Buffer():
                                                      L_uu[i], V_x, V_xx)
 
             # Eq (6).
+            # pdb.set_trace()
             k[i] = -np.linalg.solve(Q_uu, Q_u)
             K[i] = -np.linalg.solve(Q_uu, Q_ux)
 
@@ -1640,9 +1972,9 @@ class Buffer():
         # else:
         #     pass
 
-        # us[0] = np.random.uniform(0.1, 1,
-        #                           (action_size, ))  # initialize actions
-        us[0] = np.full((action_size, ), 1e-3)
+        us[0] = np.random.uniform(0.1, 1,
+                                  (action_size, ))  # initialize actions
+        # us[0] = np.full((action_size, ), 1e-3)
         ######################################
 
         # pdb.set_trace()
@@ -1660,6 +1992,15 @@ class Buffer():
 
             # Forward rollout only if it needs to be recomputed.
             if changed:
+                # # in case there are negative actions
+                # num_negative_act = 0
+                # for i in range(params.ILQR_HORIZON):
+                #     if isinstance(us[i], float):
+                #         continue
+                #     num_negative_act += len(np.where(us[i]<=0)[0])
+                #     us[i][us[i]<=0] = 0
+                # self.logger.debug('%f negative actions per step before foward_rollout', num_negative_act/params.ILQR_HORIZON)
+
                 start_time = time.time()
                 (xs, F_x, F_u, L, L_x, L_u, L_xx, L_ux,
                  L_uu) = self._forward_rollout(x0, us, state_size, action_size,
@@ -1766,7 +2107,7 @@ class Buffer():
         self._nominal_xs = xs
         self._nominal_us = us
 
-        # tiles_rate_solution is not delta_rates, it the updated rates!!
+        # tiles_rate_solution is not delta_rates, it's the updated rates!!
         tiles_rate_solution = self.buffered_tiles_sizes.copy()
         if params.SCALABLE_CODING:
             tiles_rate_solution[tile_of_interest_pos] += us[0]
@@ -1960,6 +2301,18 @@ class Buffer():
 
         tiles_rate_solution = buffered_tiles_sizes.copy()
 
+        num_pts_updated_tiles_core = np.concatenate(
+            (self.num_pts_versions[(update_start_idx - params.TARGET_LATENCY) %
+                         params.NUM_FRAMES:],
+             self.num_pts_versions[:(update_start_idx - params.TARGET_LATENCY) %
+                         params.NUM_FRAMES]),
+            axis=0)
+        num_pts_updated_tiles = num_pts_updated_tiles_core.copy()
+
+        for _ in range((params.TARGET_LATENCY - 1) // params.NUM_FRAMES):
+            num_pts_updated_tiles = np.concatenate(
+                (num_pts_updated_tiles, num_pts_updated_tiles_core), axis=1)
+
         z_weight_locations = []
         nonzero_zWeight_locs = np.where(
             (z_weights != 0) & (buffered_tiles_sizes != self.max_tile_sizes))
@@ -1968,13 +2321,13 @@ class Buffer():
         nonzero_zWeight_y = nonzero_zWeight_locs[2]
         nonzero_zWeight_z = nonzero_zWeight_locs[3]
 
-        r0 = np.zeros(
-            (num_frames_to_update, params.NUM_TILES_PER_SIDE_IN_A_FRAME,
-             params.NUM_TILES_PER_SIDE_IN_A_FRAME,
-             params.NUM_TILES_PER_SIDE_IN_A_FRAME))
-        r0[nonzero_zWeight_locs] = np.maximum(
-            buffered_tiles_sizes[nonzero_zWeight_locs],
-            self.min_rates_frames[nonzero_zWeight_locs])
+        # r0 = np.zeros(
+        #     (num_frames_to_update, params.NUM_TILES_PER_SIDE_IN_A_FRAME,
+        #      params.NUM_TILES_PER_SIDE_IN_A_FRAME,
+        #      params.NUM_TILES_PER_SIDE_IN_A_FRAME))
+        # r0[nonzero_zWeight_locs] = np.maximum(
+        #     buffered_tiles_sizes[nonzero_zWeight_locs],
+        #     self.min_rates_frames[nonzero_zWeight_locs])
 
         # tiles_rate_solution[nonzero_zWeight_locs] = np.maximum(buffered_tiles_sizes[nonzero_zWeight_locs], self.min_rates_frames[nonzero_zWeight_locs])
         tiles_rate_solution[nonzero_zWeight_locs] = buffered_tiles_sizes[
@@ -1991,6 +2344,9 @@ class Buffer():
 
         for nonzero_zWeight_idx in range(len(nonzero_zWeight_frame_idx)):
             frame_idx = nonzero_zWeight_frame_idx[nonzero_zWeight_idx]
+            frame_idx_within_video = (
+                update_start_idx + frame_idx - params.TARGET_LATENCY) % params.NUM_FRAMES
+
             x = nonzero_zWeight_x[nonzero_zWeight_idx]
             y = nonzero_zWeight_y[nonzero_zWeight_idx]
             z = nonzero_zWeight_z[nonzero_zWeight_idx]
@@ -2002,20 +2358,40 @@ class Buffer():
             })
             current_rate = tiles_rate_solution[frame_idx][x][y][z]
             current_version = self.decide_rate_version(
-                current_rate, self.rate_versions[0][x][y][z],
-                self.rate_versions[1][x][y][z], self.rate_versions[2][x][y][z])
+                current_rate, self.rate_versions[:, frame_idx_within_video, x, y, z])
+
             if current_version == params.NUM_RATE_VERSIONS:  # max rate version
                 utility_rate_slopes[frame_idx][x][y][z] = 0
                 continue
+            next_version = current_version + 1
             next_version_rate = self.rate_versions[params.NUM_RATE_VERSIONS -
                                                    (current_version +
-                                                    1)][x][y][z]
+                                                    1)][frame_idx_within_video][x][y][z]
             next_version_rates[frame_idx][x][y][z] = next_version_rate
+            # try:
             assert (next_version_rate - current_rate >
                     0), "!!! same rate between 2 levels (before loop) !!!!!"
-            utility_rate_slopes[frame_idx][x][y][z] = z_weights[frame_idx][x][y][z] * 2 * \
-                        (self.calculate_unweighted_tile_quality(next_version_rate, distances[frame_idx][x][y][z], self.tile_a[x][y][z], self.tile_b[x][y][z]) \
-                       - self.calculate_unweighted_tile_quality(tiles_rate_solution[frame_idx][x][y][z], distances[frame_idx][x][y][z], self.tile_a[x][y][z], self.tile_b[x][y][z])) \
+            # except:
+            #     pdb.set_trace()
+            if current_version == 0:
+                num_pts_cur_version = 0
+            else:
+                num_pts_cur_version = num_pts_updated_tiles[current_version - 1][frame_idx][x][y][z]
+            num_pts_next_version = num_pts_updated_tiles[next_version - 1][frame_idx][x][y][z]
+
+            ############ use lod to calculate num_pts ########
+            current_lod = params.TILE_DENSITY_LEVELS[current_version - 1]
+            if current_version == 0:
+                current_lod = 0
+            next_lod = params.TILE_DENSITY_LEVELS[next_version - 1]
+
+            num_pts_cur_version = 2**current_lod
+            num_pts_next_version = 2**next_lod
+            #######################################
+
+            utility_rate_slopes[frame_idx][x][y][z] = z_weights[frame_idx][x][y][z] * \
+                        (self.calculate_unweighted_tile_quality(next_version_rate, distances[frame_idx][x][y][z], num_pts_next_version) \
+                       - self.calculate_unweighted_tile_quality(current_rate, distances[frame_idx][x][y][z], num_pts_cur_version)) \
                        / (next_version_rate - current_rate)
 
             # print(self.calculate_unweighted_tile_quality(next_version_rate, distances[frame_idx][x][y][z], self.tile_a[x][y][z], self.tile_b[x][y][z]))
@@ -2024,11 +2400,12 @@ class Buffer():
             # print(current_rate)
             # pdb.set_trace()
 
-        sorted_z_weights = sorted(z_weight_locations, \
-                key=lambda loc: z_weights[loc["frame_idx"]]\
-                        [loc["x"]]\
-                        [loc["y"]]\
-                        [loc["z"]], reverse=True)
+        # sorted_z_weights = sorted(z_weight_locations, \
+        #         key=lambda loc: z_weights[loc["frame_idx"]]\
+        #                 [loc["x"]]\
+        #                 [loc["y"]]\
+        #                 [loc["z"]], reverse=True)
+        sorted_z_weights = z_weights
 
         # total_size = 0
         # if params.RUMA_SCALABLE_CODING:
@@ -2057,6 +2434,9 @@ class Buffer():
             max_slope_frame_idx, max_slope_x, max_slope_y, max_slope_z = np.unravel_index(
                 np.argmax(utility_rate_slopes, axis=None),
                 utility_rate_slopes.shape)
+            max_slope_frame_idx_within_video = (
+                update_start_idx + max_slope_frame_idx - params.TARGET_LATENCY) % params.NUM_FRAMES
+
             max_slope = utility_rate_slopes[max_slope_frame_idx][max_slope_x][
                 max_slope_y][max_slope_z]
             if max_slope == 0:
@@ -2081,52 +2461,115 @@ class Buffer():
             tiles_rate_solution[max_slope_frame_idx][max_slope_x][max_slope_y][
                 max_slope_z] = next_version_rate
 
-            if params.RUMA_SCALABLE_CODING:
-                consumed_bandwidth += (next_version_rate - current_rate)
-            else:
-                # locs = np.where(tiles_rate_solution > buffered_tiles_sizes)
-                # consumed_bandwidth = np.sum(tiles_rate_solution[locs])
-                # consumed_bandwidth += next_version_rate
-                if current_rate == buffered_tiles_sizes[max_slope_frame_idx][
-                        max_slope_x][max_slope_y][max_slope_z]:
-                    consumed_bandwidth += next_version_rate
-                else:
-                    consumed_bandwidth += (next_version_rate - current_rate)
+            consumed_bandwidth += (next_version_rate - current_rate)
+            # else:
+            #     # locs = np.where(tiles_rate_solution > buffered_tiles_sizes)
+            #     # consumed_bandwidth = np.sum(tiles_rate_solution[locs])
+            #     # consumed_bandwidth += next_version_rate
+            #     if current_rate == buffered_tiles_sizes[max_slope_frame_idx][
+            #             max_slope_x][max_slope_y][max_slope_z]:
+            #         consumed_bandwidth += next_version_rate
+            #     else:
+            #         consumed_bandwidth += (next_version_rate - current_rate)
 
             if consumed_bandwidth > total_size_constraint:
                 tiles_rate_solution[max_slope_frame_idx][max_slope_x][
                     max_slope_y][max_slope_z] = current_rate
                 break
 
-            if next_version_rate == self.rate_versions[0][max_slope_x][
+            if next_version_rate == self.rate_versions[0][max_slope_frame_idx_within_video][max_slope_x][
                     max_slope_y][max_slope_z]:
                 utility_rate_slopes[max_slope_frame_idx][max_slope_x][
                     max_slope_y][max_slope_z] = 0
             else:
                 current_version = self.decide_rate_version(
-                    next_version_rate, self.rate_versions[0][max_slope_x]
-                    [max_slope_y][max_slope_z], self.rate_versions[1]
-                    [max_slope_x][max_slope_y][max_slope_z],
-                    self.rate_versions[2][max_slope_x][max_slope_y]
-                    [max_slope_z])
+                    next_version_rate, self.rate_versions[:, max_slope_frame_idx_within_video, max_slope_x,
+                    max_slope_y, max_slope_z])
+                next_version = current_version + 1
                 next_version_rate = self.rate_versions[
                     params.NUM_RATE_VERSIONS -
                     (current_version +
-                     1)][max_slope_x][max_slope_y][max_slope_z]
+                     1)][max_slope_frame_idx_within_video][max_slope_x][max_slope_y][max_slope_z]
                 next_version_rates[max_slope_frame_idx][max_slope_x][
                     max_slope_y][max_slope_z] = next_version_rate
                 assert (next_version_rate -
                         tiles_rate_solution[max_slope_frame_idx][max_slope_x]
                         [max_slope_y][max_slope_z] >
                         0), "!!! same rate between 2 levels (in loop) !!!!!"
-                utility_rate_slopes[max_slope_frame_idx][max_slope_x][max_slope_y][max_slope_z] = z_weights[max_slope_frame_idx][max_slope_x][max_slope_y][max_slope_z] * 2 * \
-                           (self.calculate_unweighted_tile_quality(next_version_rate, distances[max_slope_frame_idx][max_slope_x][max_slope_y][max_slope_z], self.tile_a[max_slope_x][max_slope_y][max_slope_z], self.tile_b[max_slope_x][max_slope_y][max_slope_z]) \
-                          - self.calculate_unweighted_tile_quality(tiles_rate_solution[max_slope_frame_idx][max_slope_x][max_slope_y][max_slope_z], distances[max_slope_frame_idx][max_slope_x][max_slope_y][max_slope_z], self.tile_a[max_slope_x][max_slope_y][max_slope_z], self.tile_b[max_slope_x][max_slope_y][max_slope_z])) \
+
+                if current_version == 0:
+                    num_pts_cur_version = 0
+                else:
+                    num_pts_cur_version = num_pts_updated_tiles[current_version - 1][max_slope_frame_idx][max_slope_x][
+                    max_slope_y][max_slope_z]
+                num_pts_next_version = num_pts_updated_tiles[next_version - 1][max_slope_frame_idx][max_slope_x][
+                    max_slope_y][max_slope_z]
+
+
+                ############ use lod to calculate num_pts ########
+                current_lod = params.TILE_DENSITY_LEVELS[current_version - 1]
+                if current_version == 0:
+                    current_lod = 0
+                next_lod = params.TILE_DENSITY_LEVELS[next_version - 1]
+
+                num_pts_cur_version = 2**current_lod
+                num_pts_next_version = 2**next_lod
+                #######################################
+
+                utility_rate_slopes[max_slope_frame_idx][max_slope_x][max_slope_y][max_slope_z] = z_weights[max_slope_frame_idx][max_slope_x][max_slope_y][max_slope_z] * \
+                           (self.calculate_unweighted_tile_quality(next_version_rate, distances[max_slope_frame_idx][max_slope_x][max_slope_y][max_slope_z], num_pts_next_version) \
+                          - self.calculate_unweighted_tile_quality(tiles_rate_solution[max_slope_frame_idx][max_slope_x][max_slope_y][max_slope_z], distances[max_slope_frame_idx][max_slope_x][max_slope_y][max_slope_z], num_pts_cur_version)) \
                           / (next_version_rate - tiles_rate_solution[max_slope_frame_idx][max_slope_x][max_slope_y][max_slope_z])
 
         return tiles_rate_solution, buffered_tiles_sizes, np.sum(
             tiles_rate_solution), np.sum(
                 buffered_tiles_sizes), sorted_z_weights
+
+    def _average(self, viewing_probability, bandwidth_budget, update_start_idx,
+                 update_end_idx):
+        ##################### get v1 and v2 for each tile: ################################
+        # v1 = z_weight / r0; v2 = z_weight / params.MAX_TILE_SIZE.
+        num_frames_to_update = update_end_idx - update_start_idx + 1
+        # pdb.set_trace()
+
+        # TODO by Tongyu: wherever using max_rates_cur_step, assert max_rates_cur_step[.] != 0 to make sure it matches right tile positions.
+        # also for a_update_tiles and b_update_tiles.
+        max_rates_cur_step_core = np.concatenate(
+            (self.max_tile_sizes[(update_start_idx - params.TARGET_LATENCY) %
+                                 params.NUM_FRAMES:],
+             self.max_tile_sizes[:(update_start_idx - params.TARGET_LATENCY) %
+                                 params.NUM_FRAMES]),
+            axis=0)
+        max_rates_cur_step = max_rates_cur_step_core.copy()
+
+        for _ in range((params.TARGET_LATENCY - 1) // params.NUM_FRAMES):
+            max_rates_cur_step = np.concatenate(
+                (max_rates_cur_step, max_rates_cur_step_core), axis=0)
+
+        # tiles' byte size that are already in buffer
+        buffered_tiles_sizes = self.buffer.copy()
+        for i in range(params.TIME_GAP_BETWEEN_NOW_AND_FIRST_FRAME_TO_UPDATE *
+                       params.FPS):
+            buffered_tiles_sizes.pop(0)
+        for i in range(params.UPDATE_FREQ * params.FPS):
+            buffered_tiles_sizes.append(
+                np.zeros((params.NUM_TILES_PER_SIDE_IN_A_FRAME,
+                          params.NUM_TILES_PER_SIDE_IN_A_FRAME,
+                          params.NUM_TILES_PER_SIDE_IN_A_FRAME)))
+        buffered_tiles_sizes = np.array(buffered_tiles_sizes)
+
+        tiles_rate_solution = buffered_tiles_sizes.copy()
+        visible_tiles_pos = np.array(viewing_probability).nonzero()
+        num_tiles_to_update = len(visible_tiles_pos[0])
+        tiles_rate_solution[visible_tiles_pos] = buffered_tiles_sizes[
+            visible_tiles_pos] + bandwidth_budget / num_tiles_to_update
+        tiles_rate_solution[
+            tiles_rate_solution > max_rates_cur_step] = max_rates_cur_step[
+                tiles_rate_solution > max_rates_cur_step]
+        total_size = np.sum(tiles_rate_solution)
+
+        return tiles_rate_solution, buffered_tiles_sizes, total_size, np.sum(
+            buffered_tiles_sizes)
 
     def kkt(self, z_weights, bandwidth_budget, update_start_idx,
             update_end_idx):
@@ -2147,6 +2590,19 @@ class Buffer():
         for _ in range((params.TARGET_LATENCY - 1) // params.NUM_FRAMES):
             b_updated_tiles = np.concatenate(
                 (b_updated_tiles, b_updated_tiles_core), axis=0)
+
+        if params.HOMO_TILES:
+            # for i in range(b_updated_tiles.shape[0]):
+            #     valid_idx = b_updated_tiles[i].nonzero()
+            #     b_updated_tiles[i][valid_idx] = np.sum(b_updated_tiles[i]) / len(valid_idx[0])
+            valid_idx = b_updated_tiles.nonzero()
+            b_updated_tiles[valid_idx] = np.sum(b_updated_tiles) / len(
+                valid_idx[0])
+            b_updated_tiles[valid_idx] = 0.5
+
+        if not params.DISTANCE_BASED_UTILITY:  # q=log(r+1)
+            valid_idx = b_updated_tiles.nonzero()
+            b_updated_tiles[valid_idx] = 1
 
         # TODO by Tongyu: wherever using max_rates_cur_step, assert max_rates_cur_step[.] != 0 to make sure it matches right tile positions.
         # also for a_update_tiles and b_update_tiles.
@@ -2177,7 +2633,10 @@ class Buffer():
         # each tile has a 4 tuple location: (frame_idx, x, y, z)
         # tiles_rate_solution = params.MAX_TILE_SIZE * np.ones((num_frames_to_update, params.NUM_TILES_PER_SIDE_IN_A_FRAME, params.NUM_TILES_PER_SIDE_IN_A_FRAME, params.NUM_TILES_PER_SIDE_IN_A_FRAME))
         if params.PROGRESSIVE_DOWNLOADING:
-            tiles_rate_solution = buffered_tiles_sizes.copy()
+            if params.SCALABLE_CODING:
+                tiles_rate_solution = buffered_tiles_sizes.copy()
+            else:
+                tiles_rate_solution = np.zeros_like(buffered_tiles_sizes)
         else:
             # all zeros
             tiles_rate_solution = buffered_tiles_sizes[-params.FPS:].copy()
@@ -2231,7 +2690,10 @@ class Buffer():
             # seems redundant between r0 and buffered_tiles_sizes
             # r0[nonzero_zWeight_locs] = buffered_tiles_sizes[
             #     nonzero_zWeight_locs].copy()
-            r0 = buffered_tiles_sizes.copy()
+            if params.SCALABLE_CODING:
+                r0 = buffered_tiles_sizes.copy()
+            else:
+                r0 = np.zeros_like(buffered_tiles_sizes)
 
             # if non-progressive downloading, all r0's =0
 
@@ -3060,12 +3522,18 @@ class Buffer():
 
         return tiles_rate_solution
 
-    def decide_rate_version(self, rate, max_version, mid_version, min_version):
-        if rate == max_version:
+    def decide_rate_version(self, rate, versions):
+        if rate == versions[0]:
+            return 6
+        elif rate >= versions[1]:
+            return 5
+        elif rate >= versions[2]:
+            return 4
+        elif rate >= versions[3]:
             return 3
-        elif rate >= mid_version:
+        elif rate >= versions[4]:
             return 2
-        elif rate >= min_version:
+        elif rate >= versions[5]:
             return 1
         else:
             return 0

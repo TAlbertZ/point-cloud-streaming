@@ -14,6 +14,7 @@ import math
 from mpl_toolkits.mplot3d import Axes3D
 import time
 import logging
+import os
 
 import params
 from buffer_control_ilqr import Buffer
@@ -89,14 +90,18 @@ def main():
                         bw_traces_obj,
                         valid_tiles_obj,
                         qr_weights_obj,
+                        plot_figs_obj,
                         N=params.ILQR_HORIZON)
     buffer_obj.initialize_buffer()
-    for update_time_step in range(params.NUM_UPDATES + params.TARGET_LATENCY // params.FPS):
+    for update_time_step in range(params.NUM_UPDATES):
         logging.info(
             '\n######################## %dth update step #######################',
             update_time_step + 1)
         buffer_obj.update_tile_size_in_buffer()
         buffer_obj.emit_buffer()
+
+    if params.SAVE_TILE_LOD:
+        plot_figs_obj.save_frame_lod_list(buffer_obj.frame_lod_list)
 
     # print(buffer_obj.frame_quality)
 
@@ -123,6 +128,44 @@ def main():
     # plot_figs_obj.plot_mean_tile_quality_per_frame_trace(buffer_obj.frame_quality, buffer_obj.num_valid_tiles_per_frame)
     # plot_figs_obj.plot_per_degree_quality_per_frame_trace(buffer_obj.frame_quality, buffer_obj.total_span_per_frame)
     plot_figs_obj.plot_frame_quality_trace(buffer_obj.frame_quality)
+
+    if params.SAVE_FOV_ACCURACY_PER_FRAME:
+        results_dir = './results'
+        pkl_file_name = 'fov_front_accuracy_list.pkl'
+        save_path = os.path.join(results_dir, pkl_file_name)
+
+        with open(save_path, 'wb+') as file:
+            pk.dump(buffer_obj.fov_front_accuracy_list, file)
+        file.close()
+
+        pkl_file_name = 'fov_end_accuracy_list.pkl'
+        save_path = os.path.join(results_dir, pkl_file_name)
+
+        with open(save_path, 'wb+') as file:
+            pk.dump(buffer_obj.fov_end_accuracy_list, file)
+        file.close()
+
+        pkl_file_name = 'fov_middle_accuracy_list.pkl'
+        save_path = os.path.join(results_dir, pkl_file_name)
+
+        with open(save_path, 'wb+') as file:
+            pk.dump(buffer_obj.fov_middle_accuracy_list, file)
+        file.close()
+
+        pkl_file_name = 'fov_mean_accuracy_list.pkl'
+        save_path = os.path.join(results_dir, pkl_file_name)
+
+        with open(save_path, 'wb+') as file:
+            pk.dump(buffer_obj.fov_mean_accuracy_list, file)
+        file.close()
+
+    plot_figs_obj.plot_frame_quality_per_degree_trace(
+        buffer_obj.frame_quality_per_degree_list)
+    plot_figs_obj.plot_ang_resol_trace(buffer_obj.ang_resol_list)
+    if not params.FOV_ORACLE_KNOW:
+        plot_figs_obj.plot_wasted_rate_trace(buffer_obj.wasted_rate,
+                                             buffer_obj.visible_rate)
+        plot_figs_obj.plot_wasted_ratio_trace(buffer_obj.wasted_ratio)
     # plot_figs_obj.plot_frame_quality_var_trace(buffer_obj.frame_quality_var)
 
     # plot_figs_obj.plot_frame_size_trace(buffer_obj.frame_size_list)

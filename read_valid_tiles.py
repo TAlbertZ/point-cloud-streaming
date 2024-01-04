@@ -122,6 +122,12 @@ class ValidTiles():
 
         return [x, y, z]
 
+    def convert_pointIdx_to_coordinate_4_ply(self, x, y, z):
+        x = x * params.VOXEL_SIDE_LEN + params.VOXEL_SIDE_LEN / 2
+        y = y * params.VOXEL_SIDE_LEN + params.VOXEL_SIDE_LEN / 2
+        z = z * params.VOXEL_SIDE_LEN + params.VOXEL_SIDE_LEN / 2
+
+        return [x, y, z]
     def change_tile_coordinates_origin(self, origin, tile_center_points):
         shifted_tile_center_points = []
         for point in tile_center_points:
