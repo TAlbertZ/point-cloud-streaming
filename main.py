@@ -17,7 +17,7 @@ import logging
 import os
 
 import params
-from buffer_control_ilqr import Buffer
+from buffer_control_kkt import Buffer
 from read_valid_tiles import ValidTiles
 from read_fov_traces import FovTraces
 from read_bw_traces import BandwidthTraces
