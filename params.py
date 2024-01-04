@@ -75,10 +75,8 @@ SMOOTH_MIN_PARAM = 50
 
 FPS = 30
 
-# FIXME currently if latency larger than 300 will have problem
 TARGET_LATENCY = 600  # in frame
 
-# TODO by Tongyu: currently ilqr horizon is equal to update window len
 ILQR_HORIZON = TARGET_LATENCY // FPS
 
 # Assume frame is independently encoded/decoded

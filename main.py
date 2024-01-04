@@ -51,9 +51,6 @@ def main():
 
     fov_traces_obj = FovTraces()
     num_frames_load_from_fov_trace = params.NUM_FRAMES_VIEWED + params.TARGET_LATENCY
-    if params.ALGO == params.Algo.ILQR:
-        num_frames_load_from_fov_trace = params.NUM_FRAMES_VIEWED + (
-            params.ILQR_HORIZON - 1) * params.FPS
     fov_traces_obj.read_fov_traces_txt(params.FOV_TRACES_PATH,
                                        num_frames_load_from_fov_trace)
     fov_traces_obj.padding_txt()
