@@ -866,11 +866,11 @@ class Buffer():
         occlusion_obj = Occlusion(self.valid_tiles_obj, self.fov_traces_obj,
                                   self.origin)
         if emitting_buffer:
-            viewing_probability, distances, true_viewing_probability = occlusion_obj.KATZ(
+            viewing_probability, distances, true_viewing_probability = occlusion_obj.open3d_hpr(
                 viewpoints, update_start_idx, update_end_idx, emitting_buffer,
                 self.overlap_ratio_history)
         else:
-            viewing_probability, distances, true_viewing_probability = occlusion_obj.KATZ(
+            viewing_probability, distances, true_viewing_probability = occlusion_obj.open3d_hpr(
                 viewpoints, update_start_idx, update_end_idx, emitting_buffer,
                 self.overlap_ratio_history)
 
