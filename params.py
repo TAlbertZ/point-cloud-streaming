@@ -7,7 +7,8 @@ MMSYS_HYBRID_TILING = False
 
 SAVE_WHEN_PLOTTING = False
 
-RENDER_VIEW = False
+RENDER_VIEW = True
+IF_SAVE_RENDER = False
 
 
 class ActionInitType(Enum):
@@ -132,6 +133,7 @@ NUM_UPDATES = NUM_FRAMES_VIEWED // FPS + 2 * TARGET_LATENCY // FPS
 
 VIDEO_NAME = 'longdress'
 VALID_TILES_PATH = '../valid_tiles/' + VIDEO_NAME
+USER_FOV_TRACE = 'P01_V1'
 
 FRAME_IDX_BIAS = 1051
 LOD_BIAS = -1
@@ -235,7 +237,7 @@ NUM_RATE_VERSIONS = 6
 BARRIER_WEIGHT = 1e-9
 QUALITY_SUM_WEIGHT = 1
 
-PROGRESSIVE_DOWNLOADING = False
+PROGRESSIVE_DOWNLOADING = True
 FAKE_MAE_ERROR = False
 TRUNCATE_LINEAR_REGRESSION = True
 SCALE_FOV_PREDICTION_WIN = 0.5
@@ -265,3 +267,6 @@ DISTANCE_SCALER = 1
 # occlusion freq
 OCCLUSION_FREQ = 15
 SEGMENT_LEN = 30 # frames
+
+# in preprocess.py, we shift all points from each tile by the mean of points in first frame, so that it aligns with fov trace coordinates
+POINTS_SHIFT = np.array([476.72058875, 0, 488.34797557])

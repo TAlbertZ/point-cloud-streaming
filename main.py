@@ -95,7 +95,7 @@ def main():
             '\n######################## %dth update step #######################',
             update_time_step + 1)
         buffer_obj.update_tile_size_in_buffer()
-        buffer_obj.emit_buffer()
+        buffer_obj.emit_buffer(if_save_render=params.IF_SAVE_RENDER)
 
     if params.SAVE_TILE_LOD:
         plot_figs_obj.save_frame_lod_list(buffer_obj.frame_lod_list)

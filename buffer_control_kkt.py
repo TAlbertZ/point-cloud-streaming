@@ -23,6 +23,7 @@ class Buffer():
 		buffer controlling
 		include buffer initialization and update
 	'''
+
     def __init__(self,
                  fov_traces_obj,
                  bw_traces_obj,
@@ -191,8 +192,6 @@ class Buffer():
         self.fov_mean_accuracy_list = []
 
         self.start_time = 0
-
-
 
     def set_logger(self,
                    logger_name=__name__,
@@ -367,17 +366,16 @@ class Buffer():
             self.logger.debug('wasted rates--- %f', self.wasted_rate[-1])
             self.logger.debug('effective ratio--- %f', self.effective_rate[-1])
 
-
         return frame_quality, frame_quality_var, ang_resol, frame_num_points, frame_quality_per_degree
 
-    def emit_buffer(self):
+    def emit_buffer(self, if_save_render):
         '''
 			emit params.UPDATE_FREQ*params.FPS frames from front of buffer;;
 			Based on their true viewpoint, calculate their HPR, distance, and quality;
 			update pointers: buffer, current_viewing_frame_idx, history_viewpoints, history_bandwidths, current_bandwidth_idx
 		'''
 
-        previous_visible_tiles_set = set()
+        # previous_visible_tiles_set = set()
 
         for frame_idx in range(
                 self.current_viewing_frame_idx + 1,
@@ -386,7 +384,7 @@ class Buffer():
 
             frame_idx_within_video = (
                 frame_idx - params.TARGET_LATENCY) % params.NUM_FRAMES
-            current_visible_tiles_set = set()
+            # current_visible_tiles_set = set()
             viewpoint = {"x":[self.fov_traces_obj.fov_traces[frame_idx][0]], \
                 "y":[self.fov_traces_obj.fov_traces[frame_idx][1]], \
                 "z":[self.fov_traces_obj.fov_traces[frame_idx][2]], \
@@ -402,19 +400,81 @@ class Buffer():
             # 			 "yaw":[350.8206],
             # 			 "roll":[359.9912]}
 
-            viewing_probability, distances, true_viewing_probability = self.calculate_probability_to_be_viewed(
+            viewing_probability, distances, true_viewing_probability, visible_tile_3d_idx, image_width, image_height, intrinsic_matrix, extrinsic_matrix = self.calculate_probability_to_be_viewed(
                 viewpoint, frame_idx, frame_idx, emitting_buffer=True)
 
-            for tile_idx in range(len(viewing_probability[0].nonzero()[0])):
-                x = viewing_probability[0].nonzero()[0][tile_idx]
-                y = viewing_probability[0].nonzero()[1][tile_idx]
-                z = viewing_probability[0].nonzero()[2][tile_idx]
-                current_visible_tiles_set.add((x, y, z))
-            if frame_idx >= 1:
-                intersect = current_visible_tiles_set.intersection(
-                    previous_visible_tiles_set)
-                self.num_intersect_visible_tiles_trace.append(len(intersect))
-            previous_visible_tiles_set = current_visible_tiles_set.copy()
+            if params.RENDER_VIEW and frame_idx == 900:
+                self.viewer.create_window(visible=not if_save_render)
+                # tile_xs, tile_ys, tile_zs = valid_tiles.nonzero()
+                ply_frame_idx = (frame_idx - params.BUFFER_LENGTH
+                                 ) % params.NUM_FRAMES + params.FRAME_IDX_BIAS
+                for _3d_idx in range(len(visible_tile_3d_idx)):
+                    ply_x = visible_tile_3d_idx[_3d_idx][0]
+                    ply_y = visible_tile_3d_idx[_3d_idx][1]
+                    ply_z = visible_tile_3d_idx[_3d_idx][2]
+
+                    ply_tile_file = params.PLY_PATH + '/' + str(
+                        ply_frame_idx) + '/' + params.VIDEO_NAME + '_' + str(
+                            ply_frame_idx) + '_' + str(ply_x // 10) + str(
+                                ply_x % 10) + '_' + str(ply_y // 10) + str(
+                                    ply_y % 10) + '_' + str(ply_z // 10) + str(
+                                        ply_z % 10) + '_6.ply'
+
+                    pcd = o3d.io.read_point_cloud(ply_tile_file,
+                                                  format='ply',
+                                                  remove_nan_points=True,
+                                                  remove_infinite_points=True,
+                                                  print_progress=False)
+                    pcd.points = o3d.utility.Vector3dVector(np.array(pcd.points) - params.POINTS_SHIFT) #longdress
+                        # print(pcd)
+                        # print(np.asarray(pcd.points))
+
+                    self.viewer.add_geometry(pcd)
+                    self.viewer.update_geometry(pcd)
+
+                view_ctl = self.viewer.get_view_control()
+                cam_pose_ctl = view_ctl.convert_to_pinhole_camera_parameters()
+                cam_pose_ctl.intrinsic.height = image_height
+                cam_pose_ctl.intrinsic.width = image_width
+                cam_pose_ctl.intrinsic.intrinsic_matrix = intrinsic_matrix
+                cam_pose_ctl.extrinsic = extrinsic_matrix
+                view_ctl.convert_from_pinhole_camera_parameters(
+                    cam_pose_ctl, allow_arbitrary=True)
+                view_ctl.change_field_of_view()
+                # render
+                self.viewer.poll_events()
+                self.viewer.update_renderer()
+                if not if_save_render:
+                    self.viewer.run()
+
+                if if_save_render:
+                    # check path exist or not, if not create it
+                    if not os.path.exists('./result_new_hpr/emit/' +
+                                          params.VIDEO_NAME + '/' +
+                                          params.USER_FOV_TRACE):
+                        os.makedirs('./result_new_hpr/emit/' +
+                                    params.VIDEO_NAME + '/' +
+                                    params.USER_FOV_TRACE)
+                    self.viewer.capture_screen_image(
+                        './result_new_hpr/emit/' + params.VIDEO_NAME + '/' +
+                        params.USER_FOV_TRACE + '/' + 'fov_' +
+                        str(frame_idx).zfill(3) + '.png',
+                        do_render=False)
+                # pdb.set_trace()
+                # index should have 3 digits
+                pdb.set_trace()
+                self.viewer.destroy_window()
+
+            # for tile_idx in range(len(viewing_probability[0].nonzero()[0])):
+            #     x = viewing_probability[0].nonzero()[0][tile_idx]
+            #     y = viewing_probability[0].nonzero()[1][tile_idx]
+            #     z = viewing_probability[0].nonzero()[2][tile_idx]
+            #     current_visible_tiles_set.add((x, y, z))
+            # # if frame_idx >= 1:
+            # #     intersect = current_visible_tiles_set.intersection(
+            # #         previous_visible_tiles_set)
+            # #     self.num_intersect_visible_tiles_trace.append(len(intersect))
+            # # previous_visible_tiles_set = current_visible_tiles_set.copy()
 
             # calculate total span of fov (how many degrees)
             if len(viewing_probability[0].nonzero()[0]):
@@ -427,7 +487,6 @@ class Buffer():
             self.num_valid_tiles_per_frame.append(
                 len(viewing_probability[0].nonzero()[0]))
 
-
             true_frame_quality, true_frame_quality_var, ang_resol, frame_num_points, frame_quality_per_degree = self.true_frame_quality_sum_and_var(
                 viewing_probability[0], distances[0], frame_idx_within_video,
                 frame_idx)
@@ -436,7 +495,6 @@ class Buffer():
             self.ang_resol_list.append(ang_resol)
             self.frame_num_points_list.append(frame_num_points)
             self.frame_quality_per_degree_list.append(frame_quality_per_degree)
-
 
             # pop processed frame and store it as previous frame
             # for calculation of quality_var for next frame
@@ -461,27 +519,27 @@ class Buffer():
                     self.history_viewpoints[key].append(viewpoint_dof)
 
             # fov accuracy lists
-            if frame_idx >= params.BUFFER_LENGTH and params.SAVE_FOV_ACCURACY_PER_FRAME:
-                # pdb.set_trace()
-                front_idx = frame_idx - self.current_viewing_frame_idx - 1
-                end_idx = front_idx + params.BUFFER_LENGTH - params.FPS
-                middle_idx = int(params.BUFFER_LENGTH / params.FPS // 2 *
-                                 params.FPS + front_idx)
-                self.fov_front_accuracy_list.append(
-                    self.overlap_ratio_history[front_idx][0])
-                self.fov_end_accuracy_list.append(
-                    self.overlap_ratio_history[end_idx][0])
-                self.fov_middle_accuracy_list.append(
-                    self.overlap_ratio_history[middle_idx][0])
+            # if frame_idx >= params.BUFFER_LENGTH and params.SAVE_FOV_ACCURACY_PER_FRAME:
+            #     # pdb.set_trace()
+            #     front_idx = frame_idx - self.current_viewing_frame_idx - 1
+            #     end_idx = front_idx + params.BUFFER_LENGTH - params.FPS
+            #     middle_idx = int(params.BUFFER_LENGTH / params.FPS // 2 *
+            #                      params.FPS + front_idx)
+            #     self.fov_front_accuracy_list.append(
+            #         self.overlap_ratio_history[front_idx][0])
+            #     self.fov_end_accuracy_list.append(
+            #         self.overlap_ratio_history[end_idx][0])
+            #     self.fov_middle_accuracy_list.append(
+            #         self.overlap_ratio_history[middle_idx][0])
 
-                fov_accuracy_cur_fr = []
-                for buf_pos in range(front_idx, params.BUFFER_LENGTH,
-                                     params.FPS):
-                    fov_accuracy_cur_fr.append(
-                        self.overlap_ratio_history[buf_pos][0])
-                    self.overlap_ratio_history[buf_pos].pop(0)
-                self.fov_mean_accuracy_list.append(
-                    np.mean(fov_accuracy_cur_fr))
+            #     fov_accuracy_cur_fr = []
+            #     for buf_pos in range(front_idx, params.BUFFER_LENGTH,
+            #                          params.FPS):
+            #         fov_accuracy_cur_fr.append(
+            #             self.overlap_ratio_history[buf_pos][0])
+            #         self.overlap_ratio_history[buf_pos].pop(0)
+            #     self.fov_mean_accuracy_list.append(
+            #         np.mean(fov_accuracy_cur_fr))
 
         # update current_viewing_frame_idx, history_bandwidths, current_bandwidth_idx
         self.current_viewing_frame_idx = frame_idx
@@ -543,7 +601,7 @@ class Buffer():
                      time.time() - self.start_time)
         #################################################################
 
-        viewing_probability, distances, true_viewing_probability = self.calculate_probability_to_be_viewed(
+        viewing_probability, distances, true_viewing_probability, visible_tile_3d_idx, image_width, image_height, intrinsic_matrix, extrinsic_matrix = self.calculate_probability_to_be_viewed(
             predicted_viewpoints, update_start_idx, update_end_idx)
 
         logging.info("viewing_probability--- %f seconds ---",
@@ -566,7 +624,6 @@ class Buffer():
 
             logging.info("calculate_z--- %f seconds ---",
                          time.time() - self.start_time)
-
 
         if params.ALGO == Algo.MMSYS_HYBRID_TILING:
             tiles_rate_solution, buffered_tiles_sizes, sum_solution_rate, sum_r0, sorted_z_weights = self.hybrid_tiling(
@@ -623,11 +680,10 @@ class Buffer():
             logging.info("!!!!!!!!! nothing download !!!")
         if success_download_rate < 1 - 1e-4:  # 1e-4 is noise error term
             print("success download rate:", success_download_rate)
-            tiles_rate_solution = (
-                tiles_rate_solution - buffered_tiles_sizes[
-                    (params.BUFFER_LENGTH - tiles_rate_solution.shape[0]):]
-            ) * success_download_rate + buffered_tiles_sizes[
-                (params.BUFFER_LENGTH - tiles_rate_solution.shape[0]):]
+            tiles_rate_solution = (tiles_rate_solution - buffered_tiles_sizes[
+                (params.BUFFER_LENGTH - tiles_rate_solution.shape[0]
+                 ):]) * success_download_rate + buffered_tiles_sizes[
+                     (params.BUFFER_LENGTH - tiles_rate_solution.shape[0]):]
             sum_solution_rate = np.sum(tiles_rate_solution)
 
         logging.info("start updating buffer--- %f seconds ---",
@@ -862,20 +918,30 @@ class Buffer():
                                            emitting_buffer=False):
         # probability can be represented by overlap ratio
 
-
         occlusion_obj = Occlusion(self.valid_tiles_obj, self.fov_traces_obj,
                                   self.origin)
         if emitting_buffer:
-            viewing_probability, distances, true_viewing_probability = occlusion_obj.open3d_hpr(
-                viewpoints, update_start_idx, update_end_idx, emitting_buffer,
-                self.overlap_ratio_history)
+            viewing_probability, distances, true_viewing_probability, visible_tile_3d_idx, image_width, image_height, intrinsic_matrix, extrinsic_matrix = occlusion_obj.open3d_hpr(
+                viewpoints,
+                update_start_idx,
+                update_end_idx,
+                emitting_buffer,
+                self.overlap_ratio_history,
+                if_visible_pts=True,
+                if_save_render=True)
         else:
-            viewing_probability, distances, true_viewing_probability = occlusion_obj.open3d_hpr(
-                viewpoints, update_start_idx, update_end_idx, emitting_buffer,
-                self.overlap_ratio_history)
+            viewing_probability, distances, true_viewing_probability, visible_tile_3d_idx, image_width, image_height, intrinsic_matrix, extrinsic_matrix = occlusion_obj.open3d_hpr(
+                viewpoints,
+                update_start_idx,
+                update_end_idx,
+                emitting_buffer,
+                self.overlap_ratio_history,
+                if_visible_pts=True,
+                if_save_render=True)
 
-        return viewing_probability, list(np.array(distances) *
-                                         1), true_viewing_probability
+        return viewing_probability, list(
+            np.array(distances) * 1
+        ), true_viewing_probability, visible_tile_3d_idx, image_width, image_height, intrinsic_matrix, extrinsic_matrix
 
     def calculate_distance(self, point1, point2):
         distance = np.linalg.norm(point1 - point2)
@@ -905,7 +971,6 @@ class Buffer():
         #               params.RADIAN_TO_DEGREE)
         return num_pts * np.log(rate)
 
-
     def RUMA(self, distances, z_weights, bandwidth_budget, update_start_idx,
              update_end_idx):
         num_frames_to_update = update_end_idx - update_start_idx + 1
@@ -923,12 +988,12 @@ class Buffer():
 
         tiles_rate_solution = buffered_tiles_sizes.copy()
 
-        num_pts_updated_tiles_core = np.concatenate(
-            (self.num_pts_versions[(update_start_idx - params.TARGET_LATENCY) %
-                         params.NUM_FRAMES:],
-             self.num_pts_versions[:(update_start_idx - params.TARGET_LATENCY) %
-                         params.NUM_FRAMES]),
-            axis=0)
+        num_pts_updated_tiles_core = np.concatenate((
+            self.num_pts_versions[(update_start_idx - params.TARGET_LATENCY) %
+                                  params.NUM_FRAMES:],
+            self.num_pts_versions[:(update_start_idx - params.TARGET_LATENCY) %
+                                  params.NUM_FRAMES]),
+                                                    axis=0)
         num_pts_updated_tiles = num_pts_updated_tiles_core.copy()
 
         for _ in range((params.TARGET_LATENCY - 1) // params.NUM_FRAMES):
@@ -967,7 +1032,8 @@ class Buffer():
         for nonzero_zWeight_idx in range(len(nonzero_zWeight_frame_idx)):
             frame_idx = nonzero_zWeight_frame_idx[nonzero_zWeight_idx]
             frame_idx_within_video = (
-                update_start_idx + frame_idx - params.TARGET_LATENCY) % params.NUM_FRAMES
+                update_start_idx + frame_idx -
+                params.TARGET_LATENCY) % params.NUM_FRAMES
 
             x = nonzero_zWeight_x[nonzero_zWeight_idx]
             y = nonzero_zWeight_y[nonzero_zWeight_idx]
@@ -980,15 +1046,15 @@ class Buffer():
             })
             current_rate = tiles_rate_solution[frame_idx][x][y][z]
             current_version = self.decide_rate_version(
-                current_rate, self.rate_versions[:, frame_idx_within_video, x, y, z])
+                current_rate, self.rate_versions[:, frame_idx_within_video, x,
+                                                 y, z])
 
             if current_version == params.NUM_RATE_VERSIONS:  # max rate version
                 utility_rate_slopes[frame_idx][x][y][z] = 0
                 continue
             next_version = current_version + 1
-            next_version_rate = self.rate_versions[params.NUM_RATE_VERSIONS -
-                                                   (current_version +
-                                                    1)][frame_idx_within_video][x][y][z]
+            next_version_rate = self.rate_versions[params.NUM_RATE_VERSIONS - (
+                current_version + 1)][frame_idx_within_video][x][y][z]
             next_version_rates[frame_idx][x][y][z] = next_version_rate
             # try:
             assert (next_version_rate - current_rate >
@@ -998,8 +1064,10 @@ class Buffer():
             if current_version == 0:
                 num_pts_cur_version = 0
             else:
-                num_pts_cur_version = num_pts_updated_tiles[current_version - 1][frame_idx][x][y][z]
-            num_pts_next_version = num_pts_updated_tiles[next_version - 1][frame_idx][x][y][z]
+                num_pts_cur_version = num_pts_updated_tiles[
+                    current_version - 1][frame_idx][x][y][z]
+            num_pts_next_version = num_pts_updated_tiles[next_version -
+                                                         1][frame_idx][x][y][z]
 
             ############ use lod to calculate num_pts ########
             current_lod = params.TILE_DENSITY_LEVELS[current_version - 1]
@@ -1057,7 +1125,8 @@ class Buffer():
                 np.argmax(utility_rate_slopes, axis=None),
                 utility_rate_slopes.shape)
             max_slope_frame_idx_within_video = (
-                update_start_idx + max_slope_frame_idx - params.TARGET_LATENCY) % params.NUM_FRAMES
+                update_start_idx + max_slope_frame_idx -
+                params.TARGET_LATENCY) % params.NUM_FRAMES
 
             max_slope = utility_rate_slopes[max_slope_frame_idx][max_slope_x][
                 max_slope_y][max_slope_z]
@@ -1099,19 +1168,21 @@ class Buffer():
                     max_slope_y][max_slope_z] = current_rate
                 break
 
-            if next_version_rate == self.rate_versions[0][max_slope_frame_idx_within_video][max_slope_x][
-                    max_slope_y][max_slope_z]:
+            if next_version_rate == self.rate_versions[0][
+                    max_slope_frame_idx_within_video][max_slope_x][
+                        max_slope_y][max_slope_z]:
                 utility_rate_slopes[max_slope_frame_idx][max_slope_x][
                     max_slope_y][max_slope_z] = 0
             else:
                 current_version = self.decide_rate_version(
-                    next_version_rate, self.rate_versions[:, max_slope_frame_idx_within_video, max_slope_x,
-                    max_slope_y, max_slope_z])
+                    next_version_rate,
+                    self.rate_versions[:, max_slope_frame_idx_within_video,
+                                       max_slope_x, max_slope_y, max_slope_z])
                 next_version = current_version + 1
                 next_version_rate = self.rate_versions[
                     params.NUM_RATE_VERSIONS -
-                    (current_version +
-                     1)][max_slope_frame_idx_within_video][max_slope_x][max_slope_y][max_slope_z]
+                    (current_version + 1)][max_slope_frame_idx_within_video][
+                        max_slope_x][max_slope_y][max_slope_z]
                 next_version_rates[max_slope_frame_idx][max_slope_x][
                     max_slope_y][max_slope_z] = next_version_rate
                 assert (next_version_rate -
@@ -1122,11 +1193,11 @@ class Buffer():
                 if current_version == 0:
                     num_pts_cur_version = 0
                 else:
-                    num_pts_cur_version = num_pts_updated_tiles[current_version - 1][max_slope_frame_idx][max_slope_x][
-                    max_slope_y][max_slope_z]
-                num_pts_next_version = num_pts_updated_tiles[next_version - 1][max_slope_frame_idx][max_slope_x][
-                    max_slope_y][max_slope_z]
-
+                    num_pts_cur_version = num_pts_updated_tiles[
+                        current_version - 1][max_slope_frame_idx][max_slope_x][
+                            max_slope_y][max_slope_z]
+                num_pts_next_version = num_pts_updated_tiles[next_version - 1][
+                    max_slope_frame_idx][max_slope_x][max_slope_y][max_slope_z]
 
                 ############ use lod to calculate num_pts ########
                 current_lod = params.TILE_DENSITY_LEVELS[current_version - 1]
